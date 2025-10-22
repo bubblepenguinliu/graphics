@@ -48,18 +48,24 @@ Matrix4f Camera::view()
 Matrix4f Camera::projection()
 {
     const float fov_y = radians(fov_y_degrees);
-    const float top   = (target - position).norm() * std::tan(fov_y / 2.0f);
-    const float right = top * aspect_ratio;
+    const float n = near_plane;
+    const float f = far_plane;
+    const float a = aspect_ratio;
+    const float y_scale = 1.0f / std::tan(fov_y / 2.0f);
+    const float x_scale = y_scale / a;
 
     Matrix4f projection = Matrix4f::Zero();
-    // 使用平行投影时，用户并不能从画面上直观地感受到相机的位置，
-    // 因而会产生近处物体裁剪过多的错觉。为了产程更好的观察效果，
-    // 这里没有使用相机本身的 near 而是取 near = -far 来让相机能看到“背后”的物体。
-    projection(0, 0) = 1.0f / right;
-    projection(1, 1) = 1.0f / top;
-    projection(2, 2) = -1.0f / far_plane;
-    projection(2, 3) = 0.0f;
-    projection(3, 3) = 1.0f;
+    projection(0, 0) = x_scale;
+    projection(1, 1) = y_scale;
+    projection(2, 2) = - (f + n) / (f - n);
+    projection(2, 3) = - 2.0f * f * n / (f - n);
+    projection(3, 2) = -1.0f;
+
+    // fov_y 是垂直方向的视场角（角度转弧度），决定了“看到多高”
+    // n 和 f 分别是近平面和远平面的位置
+    // a 是宽高比，决定了画面横向拉伸程度
+    // x_scale 和 y_scale 控制投影后 x/y 方向的缩放，使视锥体正好映射到标准立方体
+    // 矩阵的第三行和第四行负责把 z 坐标和透视除法处理成 OpenGL 需要的格式
 
     return projection;
 }

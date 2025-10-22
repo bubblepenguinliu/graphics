@@ -45,7 +45,21 @@ Object::Object(const string& object_name) :
 
 Matrix4f Object::model()
 {
-    return Matrix4f::Identity();
+
+    Matrix4f S = Matrix4f::Identity();
+    S(0, 0) = scaling.x();
+    S(1, 1) = scaling.y();
+    S(2, 2) = scaling.z();
+
+    Matrix4f R = Matrix4f::Identity();
+    R.block<3,3>(0,0) = rotation.toRotationMatrix();
+
+    Matrix4f T = Matrix4f::Identity();
+    T(0, 3) = center.x();
+    T(1, 3) = center.y();
+    T(2, 3) = center.z();
+
+    return T * R * S;
 }
 
 void Object::update(vector<Object*>& all_objects)

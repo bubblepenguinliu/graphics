@@ -119,3 +119,5 @@ set(current_target ${PROJECT_NAME})
 include(${CMAKE_CURRENT_SOURCE_DIR}/CompilerFlags.cmake)
 
 file(COPY ${PROJECT_SOURCE_DIR}/resources DESTINATION ${PROJECT_BINARY_DIR})
+
+include_directories(./eigen)
