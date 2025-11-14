@@ -196,27 +196,16 @@ void Toolbar::layout_mode(Scene& scene)
             );
             ImGui::PopItemWidth();
             ImGui::PopID();
-
-
-            
-            // 将角度从度转换为弧度
-            float rad_x = radians(x_angle) / 2.0f;
-            float rad_y = radians(y_angle) / 2.0f;
-            float rad_z = radians(z_angle) / 2.0f;
-
-            // 1. 分别计算三个轴旋转的四元数
-            // 注意Eigen::Quaternionf的构造函数参数顺序是 (w, x, y, z)
-            Eigen::Quaternionf q_x(std::cos(rad_x), std::sin(rad_x), 0.0f, 0.0f); // 绕X轴旋转
-            Eigen::Quaternionf q_y(std::cos(rad_y), 0.0f, std::sin(rad_y), 0.0f); // 绕Y轴旋转
-            Eigen::Quaternionf q_z(std::cos(rad_z), 0.0f, 0.0f, std::sin(rad_z)); // 绕Z轴旋转
-
-            // 2. 按ZYX顺序组合旋转：q = q_x * q_y * q_z
-            Eigen::Quaternionf q_total = q_x * q_y * q_z;
-
-            // 3. 将最终的四元数赋值给物体的旋转成员变量
-            // Eigen库中，物体的rotation成员变量可以直接被四元数赋值
-            selected_object->rotation = q_total;
-
+            // 将欧拉角转换为四元数
+            float kx = radians(x_angle);
+            float ky = radians(y_angle);
+            float kz = radians(z_angle);
+            Quaternionf qx(cos(kx / 2.0f), sin(kx / 2.0f), 0.0f, 0.0f);
+            Quaternionf qy(cos(ky / 2.0f), 0.0f, sin(ky / 2.0f), 0.0f);
+            Quaternionf qz(cos(kz / 2.0f), 0.0f, 0.0f, sin(kz / 2.0f));
+            Quaternionf rotation = qx * qy * qz;
+            rotation.normalize();
+            selected_object->rotation = rotation;
         }
         ImGui::EndTabItem();
     }

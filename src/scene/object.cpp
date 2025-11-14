@@ -14,7 +14,7 @@
 #include "../utils/ray.h"
 #include "../simulation/solver.h"
 #include "../utils/logger.h"
-
+#include "../utils/math.hpp"
 using Eigen::Matrix4f;
 using Eigen::Quaternionf;
 using Eigen::Vector3f;
@@ -45,21 +45,41 @@ Object::Object(const string& object_name) :
 
 Matrix4f Object::model()
 {
+    Matrix4f scale_matrix=Matrix4f::Identity();
+    scale_matrix(0,0)=scaling.x();
+    scale_matrix(1,1)=scaling.y();
+    scale_matrix(2,2)=scaling.z();
+    const Quaternionf &r = rotation;
+    auto [x_angle, y_angle, z_angle] = quaternion_to_ZYX_euler(r.w(), r.x(),r.y(), r.z());
+    Matrix4f rotation_x=Matrix4f::Identity();
+    Matrix4f rotation_y=Matrix4f::Identity();
+    Matrix4f rotation_z=Matrix4f::Identity();
+    float x = radians(x_angle);
+    float y = radians(y_angle);
+    float z = radians(z_angle);
+    rotation_x(1,1)=cos(x);
+    rotation_x(1,2)=-sin(x);
+    rotation_x(2,1)=sin(x);
+    rotation_x(2,2)=cos(x);
+    rotation_x(0,0)=1;
 
-    Matrix4f S = Matrix4f::Identity();
-    S(0, 0) = scaling.x();
-    S(1, 1) = scaling.y();
-    S(2, 2) = scaling.z();
+    rotation_y(0,0)=cos(y);
+    rotation_y(0,2)=sin(y);
+    rotation_y(1,1)=1;
+    rotation_y(2,0)=-sin(y);
+    rotation_y(2,2)=cos(y);
 
-    Matrix4f R = Matrix4f::Identity();
-    R.block<3,3>(0,0) = rotation.toRotationMatrix();
-
-    Matrix4f T = Matrix4f::Identity();
-    T(0, 3) = center.x();
-    T(1, 3) = center.y();
-    T(2, 3) = center.z();
-
-    return T * R * S;
+    rotation_z(0,0)=cos(z);
+    rotation_z(0,1)=-sin(z);
+    rotation_z(1,0)=sin(z);
+    rotation_z(1,1)=cos(z);
+    rotation_z(2,2)=1;
+    Matrix4f rotation=rotation_x*rotation_y*rotation_z;
+    Matrix4f centering=Matrix4f::Identity();
+    centering(0,3)=center.x();
+    centering(1,3)=center.y();
+    centering(2,3)=center.z();
+    return centering*rotation*scale_matrix;
 }
 
 void Object::update(vector<Object*>& all_objects)

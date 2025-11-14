@@ -47,25 +47,40 @@ Matrix4f Camera::view()
 
 Matrix4f Camera::projection()
 {
-    const float fov_y = radians(fov_y_degrees);
-    const float n = near_plane;
-    const float f = far_plane;
-    const float a = aspect_ratio;
-    const float y_scale = 1.0f / std::tan(fov_y / 2.0f);
-    const float x_scale = y_scale / a;
+    const float fov_y  = radians(fov_y_degrees);
+    const float aspect = aspect_ratio;
 
+    // 定义视图截锥体的近平面和远平面距离（均为正值）
+    const float n = near_plane; // 近平面距离 n
+    const float f = far_plane;  // 远平面距离 f
+
+    // 计算 Y 轴上的缩放因子，基于垂直视场角（FOV_y）
+    // y_scale = cot(FOV_y / 2)
+    const float y_scale = 1.0f / std::tan(fov_y / 2.0f);
+    // 计算 X 轴上的缩放因子，基于 y_scale 和宽高比
+    // x_scale = y_scale / aspect_ratio
+    const float x_scale = y_scale / aspect;
+
+    // 初始化一个 4x4 零矩阵用于构建透视投影矩阵
     Matrix4f projection = Matrix4f::Zero();
+
+    // 设置矩阵元素：[0][0] 为 X 轴缩放因子
     projection(0, 0) = x_scale;
+
+    // 设置矩阵元素：[1][1] 为 Y 轴缩放因子
     projection(1, 1) = y_scale;
-    projection(2, 2) = - (f + n) / (f - n);
-    projection(2, 3) = - 2.0f * f * n / (f - n);
+
+    // 设置矩阵元素：[2][2] 用于 Z 坐标的缩放和平移，将 [n, f] 映射到 [-1, 1]（或 [0, 1] 取决于约定）
+    // 主要是执行 Z 值的非线性变换：- (f + n) / (f - n)
+    projection(2, 2) = -(f + n) / (f - n);
+
+    // 设置矩阵元素：[2][3] 也是 Z 坐标变换的一部分（平移项）
+    // -2 * f * n / (f - n)
+    projection(2, 3) = -2.0f * f * n / (f - n);
+
+    // 设置矩阵元素：[3][2] 用于 W 坐标，实现透视除法（将 -z 放入 w）
     projection(3, 2) = -1.0f;
 
-    // fov_y 是垂直方向的视场角（角度转弧度），决定了“看到多高”
-    // n 和 f 分别是近平面和远平面的位置
-    // a 是宽高比，决定了画面横向拉伸程度
-    // x_scale 和 y_scale 控制投影后 x/y 方向的缩放，使视锥体正好映射到标准立方体
-    // 矩阵的第三行和第四行负责把 z 坐标和透视除法处理成 OpenGL 需要的格式
-
+    // 返回构建好的透视投影矩阵
     return projection;
 }
