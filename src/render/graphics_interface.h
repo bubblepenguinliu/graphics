@@ -31,6 +31,7 @@ struct VertexShaderPayload
     Eigen::Vector4f viewport_position;
     /*! \~chinese 顶点法线 */
     Eigen::Vector3f normal;
+    size_t index=0;
 };
 
 /*!
@@ -172,7 +173,7 @@ public:
     std::vector<Eigen::Vector3f> color_buffer;
     /*! \~chinese depth buffer 也可以叫做 z-buffer，用于判断像素点相较于观察点的前后关系 */
     std::vector<float> depth_buffer;
-
+    std::vector<Eigen::Vector3f> normal_buffer;
 private:
 
     /*! \~chinese 用于在深度测试和着色时对相应位置的像素加锁 */
@@ -211,6 +212,10 @@ struct Uniforms
  */
 struct Context
 {
+    static std::vector<VertexShaderPayload> vertex_shader_output_buffer;  // 按索引存储
+    static std::atomic<size_t> processed_vertex_count;  // 已处理数量
+    static size_t total_vertex_count;  // 总顶点数量
+    static std::atomic<size_t> next_vertex_to_rasterize;  // 下一个要光栅化的顶点索引
     /*! \~chinese 保护队列的互斥锁 */
     static std::mutex vertex_queue_mutex;
     /*! \~chinese 保护队列的互斥锁 */

@@ -3,7 +3,7 @@
 #include <vector>
 #include <thread>
 #include <chrono>
-
+#include <atomic>
 #include <Eigen/Core>
 #include <Eigen/Geometry>
 
@@ -36,7 +36,11 @@ Camera&           Uniforms::camera   = ini_camera;
 std::mutex                        Context::vertex_queue_mutex;
 std::mutex                        Context::rasterizer_queue_mutex;
 std::queue<VertexShaderPayload>   Context::vertex_shader_output_queue;
+std::vector<VertexShaderPayload>  Context::vertex_shader_output_buffer;
+std::atomic<size_t>               Context::processed_vertex_count(0);
+std::atomic<size_t>               Context::next_vertex_to_rasterize(0);
 std::queue<FragmentShaderPayload> Context::rasterizer_output_queue;
+size_t                            Context::total_vertex_count = 0;
 
 volatile bool Context::vertex_finish     = false;
 volatile bool Context::rasterizer_finish = false;
@@ -80,20 +84,35 @@ void RasterizerRenderer::render(const Scene& scene)
     vertex_processor.vertex_shader_ptr     = vertex_shader;
     fragment_processor.fragment_shader_ptr = phong_fragment_shader;
     for (const auto& group: scene.groups) {
-        for (const auto& object: group->objects) {
+        for (const auto& object: group->objects) { 
+            // 清空所有队列
+            vertex_processor.clear_queue();
+            {
+                std::lock_guard<std::mutex> lock(Context::rasterizer_queue_mutex);
+                while (!Context::rasterizer_output_queue.empty()) {
+                    Context::rasterizer_output_queue.pop();
+                }
+            }
+            // 清空缓冲区
+            Context::vertex_shader_output_buffer.clear();
+            
+            // 重置标志位（必须在线程启动前设置！）
             Context::vertex_finish     = false;
             Context::rasterizer_finish = false;
             Context::fragment_finish   = false;
-
-            std::vector<std::thread> workers;
-            for (int i = 0; i < n_vertex_threads; ++i) {
-                workers.emplace_back(&VertexProcessor::worker_thread, &vertex_processor);
-            }
-            for (int i = 0; i < n_rasterizer_threads; ++i) {
-                workers.emplace_back(&Rasterizer::worker_thread, &rasterizer);
-            }
-            for (int i = 0; i < n_fragment_threads; ++i) {
-                workers.emplace_back(&FragmentProcessor::worker_thread, &fragment_processor);
+            const std::vector<unsigned int>& faces = object->mesh.faces.data;
+            size_t num_faces = faces.size();
+            Context::total_vertex_count = num_faces;
+            Context::processed_vertex_count.store(0);
+            Context::next_vertex_to_rasterize.store(0);
+            
+            Context::vertex_shader_output_buffer.resize(Context::total_vertex_count);
+            // 初始化所有元素为无效状态（viewport_position.w() = 0 表示未处理）
+            for (auto& v : Context::vertex_shader_output_buffer) {
+                v.viewport_position = Eigen::Vector4f(0, 0, 0, 0); 
+                v.world_position = Eigen::Vector4f(0, 0, 0, 0);
+                v.normal = Eigen::Vector3f(0, 0, 0);
+                v.index = 0;
             }
 
             // set Uniforms for vertex shader
@@ -106,27 +125,37 @@ void RasterizerRenderer::render(const Scene& scene)
             Uniforms::lights   = scene.lights;
             Uniforms::camera   = scene.camera;
 
-            // input object->mesh's vertices & faces & normals data
-            const std::vector<float>&        vertices  = object->mesh.vertices.data;
-            const std::vector<unsigned int>& faces     = object->mesh.faces.data;
-            const std::vector<float>&        normals   = object->mesh.normals.data;
-            size_t                           num_faces = faces.size();
-
-            // process vertices
+             // input object->mesh's vertices & faces & normals data
+            const std::vector<float>& vertices = object->mesh.vertices.data;
+            const std::vector<float>& normals  = object->mesh.normals.data;
+            
+            size_t index = 0;
             for (size_t i = 0; i < num_faces; i += 3) {
                 for (size_t j = 0; j < 3; j++) {
-                    size_t idx = faces[i + j];
+                   size_t idx = faces[i + j];
+                    VertexShaderPayload payload;
+                    payload.world_position = Vector4f(
+                        vertices[3 * idx], vertices[3 * idx + 1], vertices[3 * idx + 2], 1.0f
+                    );
+                    payload.normal = Vector3f(
+                        normals[3 * idx], normals[3 * idx + 1], normals[3 * idx + 2]
+                    );
                     vertex_processor.input_vertices(
-                        Vector4f(
-                            vertices[3 * idx], vertices[3 * idx + 1], vertices[3 * idx + 2], 1.0f
-                        ),
-                        Vector3f(normals[3 * idx], normals[3 * idx + 1], normals[3 * idx + 2])
+                        payload.world_position, payload.normal, index++
                     );
                 }
             }
-            vertex_processor.input_vertices(
-                Eigen::Vector4f(0, 0, 0, -1.0f), Eigen::Vector3f::Zero()
-            );
+            
+            std::vector<std::thread> workers;
+            for (int i = 0; i < n_vertex_threads; ++i) {
+                workers.emplace_back(&VertexProcessor::worker_thread, &vertex_processor);
+            }
+            for (int i = 0; i < n_rasterizer_threads; ++i) {
+                workers.emplace_back(&Rasterizer::worker_thread, &rasterizer);
+            }
+            for (int i = 0; i < n_fragment_threads; ++i) {
+                workers.emplace_back(&FragmentProcessor::worker_thread, &fragment_processor);
+            } 
             for (auto& worker: workers) {
                 if (worker.joinable()) {
                     worker.join();
@@ -153,39 +182,64 @@ void RasterizerRenderer::render(const Scene& scene)
     }
 }
 
-void VertexProcessor::input_vertices(const Vector4f& positions, const Vector3f& normals)
+void VertexProcessor::input_vertices(const Vector4f& positions, const Vector3f& normals, size_t index)
 {
     std::unique_lock<std::mutex> lock(queue_mutex);
     VertexShaderPayload          payload;
     payload.world_position = positions;
     payload.normal         = normals;
+    payload.index          = index;
     vertex_queue.push(payload);
+}
+
+void VertexProcessor::clear_queue()
+{
+    std::lock_guard<std::mutex> lock(queue_mutex);
+    while (!vertex_queue.empty()) {
+        vertex_queue.pop();
+    }
 }
 
 void VertexProcessor::worker_thread()
 {
-    while (!Context::vertex_finish) {
+    while (true) {
         VertexShaderPayload payload;
+        bool has_payload = false;
         {
-            if (vertex_queue.empty()) {
-                continue;
-            }
+
             std::unique_lock<std::mutex> lock(queue_mutex);
-            if (vertex_queue.empty()) {
-                continue;
+            if (!vertex_queue.empty()) {
+                payload = vertex_queue.front();
+                vertex_queue.pop();
+                has_payload = true;
             }
-            payload = vertex_queue.front();
-            vertex_queue.pop();
         }
-        if (payload.world_position.w() == -1.0f) {
-            Context::vertex_finish = true;
-            return;
+        
+        // 如果没有数据，检查是否应该退出
+        if (!has_payload) {
+            // 检查是否所有顶点都已经处理完成
+            if (Context::processed_vertex_count.load() >= Context::total_vertex_count) {
+                Context::vertex_finish = true;
+                return;
+            }
+            // 还有顶点在处理中，继续等待
+            std::this_thread::yield();
+            continue;
         }
+        
+        // 处理顶点
         VertexShaderPayload output_payload = vertex_shader_ptr(payload);
-        {
-            std::unique_lock<std::mutex> lock(Context::vertex_queue_mutex);
-            Context::vertex_shader_output_queue.push(output_payload);
+        output_payload.index = payload.index;
+        
+        // 边界检查：防止越界访问
+        if (output_payload.index >= Context::vertex_shader_output_buffer.size()) {
+            // 索引越界，跳过但仍然增加计数（避免死锁）
+            Context::processed_vertex_count.fetch_add(1);
+            continue;
         }
+        
+        Context::vertex_shader_output_buffer[output_payload.index] = output_payload;
+        Context::processed_vertex_count.fetch_add(1);
     }
 }
 
@@ -208,8 +262,16 @@ void FragmentProcessor::worker_thread()
             fragment = Context::rasterizer_output_queue.front();
             Context::rasterizer_output_queue.pop();
         }
+        
+        // 边界检查：确保片元坐标在有效范围内
+        if (fragment.x < 0 || fragment.x >= Uniforms::width ||
+            fragment.y < 0 || fragment.y >= Uniforms::height) {
+            continue;  // 跳过越界的片元
+        }
+        
         int index = (Uniforms::height - 1 - fragment.y) * Uniforms::width + fragment.x;
-        if (fragment.depth > Context::frame_buffer.depth_buffer[index]) {
+        
+        if (index < 0 || index >= static_cast<int>(Context::frame_buffer.depth_buffer.size())) {
             continue;
         }
         fragment.color =

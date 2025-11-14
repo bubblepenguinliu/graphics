@@ -28,7 +28,13 @@ public:
      * \param positions 顶点位置坐标
      * \param normals 顶点法线向量
      */
-    void input_vertices(const Eigen::Vector4f& positions, const Eigen::Vector3f& normals);
+    void input_vertices(const Eigen::Vector4f& positions, const Eigen::Vector3f& normals,size_t index);
+    
+    /*!
+     * \~chinese
+     * \brief 清空顶点队列
+     */
+    void clear_queue();
     
     /*!
      * \~chinese

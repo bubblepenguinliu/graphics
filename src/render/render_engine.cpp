@@ -5,7 +5,7 @@ Eigen::Vector3f RenderEngine::background_color(RGB_COLOR(100, 100, 100));
 RenderEngine::RenderEngine()
 {
     // unique pointer to Rasterizer Renderer
-    rasterizer_render = std::make_unique<RasterizerRenderer>(*this, 2, 2, 2);
+    rasterizer_render = std::make_unique<RasterizerRenderer>(*this, 6, 6, 6);
     // unique pointer to Whitted Style Renderer
     whitted_render = std::make_unique<WhittedRenderer>(*this);
     // default setting of number of threads(if use multi-threads edition)
@@ -51,11 +51,19 @@ void FrameBuffer::clear(BufferType buff)
 
 void FrameBuffer::set_pixel(int index, float depth, const Eigen::Vector3f& color)
 {
+    // 边界检查：防止越界访问
+    if (index < 0 || index >= static_cast<int>(depth_buffer.size())) {
+        return;  // 忽略无效索引
+    }
+    
     // spin locks lock
     spin_locks[index].lock();
 
-    depth_buffer[index] = depth;
-    color_buffer[index] = color;
+    // 深度测试：只有当新深度更小（更近）时才更新
+    if (depth < depth_buffer[index]) {
+        depth_buffer[index] = depth;
+        color_buffer[index] = color;
+    }
 
     // spin locks unlock
     spin_locks[index].unlock();
