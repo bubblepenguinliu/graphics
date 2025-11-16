@@ -617,75 +617,139 @@ void HalfedgeMesh::loop_subdivide()
     // ======================== Step 1 ========================
     logger->info("Step 1: Computing new positions for original vertices...");
 
-    for (Vertex* v = vertices.head; v != nullptr; v = v->next_node) {
-        v->is_new = false;
-
-        bool      is_boundary_vertex = false;
-        Halfedge* it                 = v->halfedge;
-        if (it) {
-            Halfedge* start = it;
-            do {
-                if (it->is_boundary()) {
-                    is_boundary_vertex = true;
-                    break;
-                }
-                it = (it->inv && it->inv->next) ? it->inv->next : nullptr;
-                if (!it)
-                    break;
-            } while (it != start);
+    // Helper: ensure v->halfedge is set by scanning global halfedges (best-effort)
+    auto ensure_vertex_halfedge = [this](Vertex* v) {
+        if (!v)
+            return;
+        if (v->halfedge)
+            return;
+        for (Halfedge* hh = halfedges.head; hh != nullptr; hh = hh->next_node) {
+            if (hh->from == v) {
+                v->halfedge = hh;
+                logger->debug("  set missing halfedge for vertex {} to {}", v->id, hh->id);
+                return;
+            }
         }
+    };
 
-        if (is_boundary_vertex) {
-            Vertex* v1 = nullptr;
-            Vertex* v2 = nullptr;
-            it         = v->halfedge;
-            if (it) {
-                Halfedge* start = it;
-                do {
-                    if (it->is_boundary()) {
-                        if (!v1) {
-                            v1 = it->inv ? it->inv->from : nullptr;
-                        } else {
-                            v2 = it->inv ? it->inv->from : nullptr;
-                            break;
+    for (Vertex* v = vertices.head; v != nullptr; v = v->next_node) {
+        v->is_new  = false;
+        v->new_pos = v->pos; // default
+
+        // Attempt to ensure v->halfedge exists for local ops
+        ensure_vertex_halfedge(v);
+
+        // -----------------------
+        // Robust neighbor collection:
+        // do NOT rely only on local next/inv traversal which can fail temporarily;
+        // instead gather neighbors by scanning halfedges and deduplicating.
+        // -----------------------
+        bool                 is_boundary_vertex = false;
+        std::vector<Vertex*> neighbors;
+        neighbors.reserve(16);
+
+        for (Halfedge* h = halfedges.head; h != nullptr; h = h->next_node) {
+            // If this halfedge originates from v, the opposite vertex is h->inv->from (if inv exists)
+            if (h->from == v) {
+                if (!h->inv) {
+                    is_boundary_vertex = true;
+                } else {
+                    Vertex* nb = h->inv->from;
+                    if (nb && nb != v) {
+                        if (std::find(neighbors.begin(), neighbors.end(), nb) == neighbors.end()) {
+                            neighbors.push_back(nb);
                         }
                     }
-                    it = (it->inv && it->inv->next) ? it->inv->next : nullptr;
-                    if (!it)
-                        break;
-                } while (it != start);
+                }
             }
-
-            if (v1 && v2) {
-                v->new_pos = 0.75f * v->pos + 0.125f * (v1->pos + v2->pos);
-            } else {
-                v->new_pos = v->pos;
-            }
-        } else {
-            size_t   n            = 0;
-            Vector3f neighbor_sum = Vector3f::Zero();
-            it                    = v->halfedge;
-            if (it) {
-                Halfedge* start = it;
-                do {
-                    Vertex* neighbor = it->inv ? it->inv->from : nullptr;
-                    if (neighbor) {
-                        neighbor_sum += neighbor->pos;
-                        ++n;
+            // Also consider halfedges whose inv originates from v (covers alternate orientation)
+            if (h->inv && h->inv->from == v) {
+                Vertex* nb = h->from;
+                if (nb && nb != v) {
+                    if (std::find(neighbors.begin(), neighbors.end(), nb) == neighbors.end()) {
+                        neighbors.push_back(nb);
                     }
-                    it = (it->inv && it->inv->next) ? it->inv->next : nullptr;
-                    if (!it)
-                        break;
-                } while (it != start);
-            }
-
-            if (n > 0) {
-                float u    = (n == 3) ? (3.0f / 16.0f) : (3.0f / (8.0f * n));
-                v->new_pos = (1.0f - n * u) * v->pos + u * neighbor_sum;
-            } else {
-                v->new_pos = v->pos;
+                }
             }
         }
+
+        // Collect boundary-neighbors (two adjacent verts along boundary loop) if any
+        std::vector<Vertex*> boundary_neighbors;
+        if (is_boundary_vertex) {
+            for (Halfedge* h = halfedges.head; h != nullptr; h = h->next_node) {
+                if (h->from == v && h->is_boundary()) {
+                    Vertex* nb = h->inv ? h->inv->from : nullptr;
+                    if (nb && nb != v) {
+                        if (std::find(boundary_neighbors.begin(), boundary_neighbors.end(), nb)
+                            == boundary_neighbors.end()) {
+                            boundary_neighbors.push_back(nb);
+                        }
+                    }
+                }
+                if (h->inv && h->inv->from == v && h->is_boundary()) {
+                    Vertex* nb = h->from;
+                    if (nb && nb != v) {
+                        if (std::find(boundary_neighbors.begin(), boundary_neighbors.end(), nb)
+                            == boundary_neighbors.end()) {
+                            boundary_neighbors.push_back(nb);
+                        }
+                    }
+                }
+            }
+        }
+
+        // -----------------------
+        // Fault-tolerant boundary handling:
+        // If vertex is flagged boundary but has >= 3 neighbors (typical internal valence),
+        // this is likely a mis-detection due to temporary inv/next inconsistency.
+        // In that case, force internal smoothing (log a warning).
+        // Only when boundary_neighbors has >= 2 (and neighbors.size() < 3) do we apply the boundary rule.
+        // -----------------------
+        if (is_boundary_vertex) {
+            if (neighbors.size() >= 3) {
+                logger->warn(
+                    "Vertex {} incorrectly flagged as boundary but has {} neighbors. Forcing "
+                    "internal smoothing.",
+                    v->id, neighbors.size()
+                );
+                // fallthrough to internal smoothing below
+            } else if (boundary_neighbors.size() >= 2) {
+                // legitimate boundary with two neighbors -> apply Loop boundary rule
+                Vertex* v1 = boundary_neighbors[0];
+                Vertex* v2 = boundary_neighbors[1];
+                if (v1 && v2) {
+                    v->new_pos = 0.75f * v->pos + 0.125f * (v1->pos + v2->pos);
+                    continue; // done for this vertex
+                }
+                // if something odd, fall through to internal smoothing
+            } else {
+                // boundary flagged but insufficient boundary neighbors: fall back to internal smoothing
+                logger->warn(
+                    "Vertex {} boundary flagged but couldn't collect two boundary neighbors; "
+                    "falling back to internal smoothing.",
+                    v->id
+                );
+            }
+        }
+
+        // -----------------------
+        // Internal vertex smoothing (or fallback from ambiguous boundary case)
+        // Use Loop formula with mu = 3/16 if n==3 else mu = 3/(8n)
+        // -----------------------
+        size_t n = neighbors.size();
+        if (n == 0) {
+            // degenerate: keep the original position
+            v->new_pos = v->pos;
+            continue;
+        }
+
+        Vector3f neighbor_sum = Vector3f::Zero();
+        for (Vertex* nb: neighbors) {
+            neighbor_sum += nb->pos;
+        }
+
+        float u    = (n == 3) ? (3.0f / 16.0f) : (3.0f / (8.0f * static_cast<float>(n)));
+        v->new_pos = (1.0f - n * u) * v->pos + u * neighbor_sum;
     }
     logger->info("✓ Step 1 done");
 
@@ -766,9 +830,11 @@ void HalfedgeMesh::loop_subdivide()
 
     vector<Edge*> edges_to_flip;
     for (Edge* e = edges.head; e != nullptr; e = e->next_node) {
-        if (!e->is_new) {
-            edges_to_flip.push_back(e);
-        }
+        if (!e)
+            continue;
+        if (!e->is_new)
+            continue; // flip new edges created by split
+        edges_to_flip.push_back(e);
     }
 
     int flip_count = 0;
@@ -780,16 +846,15 @@ void HalfedgeMesh::loop_subdivide()
         if (!h || !h->inv)
             continue;
 
+        if (h->is_boundary() || h->inv->is_boundary())
+            continue;
+
         Vertex* v1 = h->from;
         Vertex* v2 = h->inv->from;
-
         if (!v1 || !v2)
             continue;
 
         if (v1->is_new == v2->is_new)
-            continue;
-
-        if (h->is_boundary() || h->inv->is_boundary())
             continue;
 
         Face* f1 = h->face;
