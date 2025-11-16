@@ -28,6 +28,47 @@ HalfedgeMesh::EdgeRecord::EdgeRecord(unordered_map<Vertex*, Matrix4f>& vertex_qu
     cost        = 0.0f;
 }
 
+bool HalfedgeMesh::find_and_set_outgoing_halfedge(Vertex* v)
+{
+    if (!v)
+        return false;
+    // 如果当前指针已经合法，直接返回
+    if (v->halfedge && v->halfedge->from == v)
+        return true;
+
+    // 1) 尝试在局部环上找到（通过从任何相邻半边绕圈）
+    Halfedge* start = v->halfedge;
+    if (start) {
+        Halfedge* it = start;
+        do {
+            // 看看 it 的 inv 是否从 v 发出
+            if (it->inv && it->inv->from == v) {
+                v->halfedge = it->inv;
+                return true;
+            }
+            // 继续沿着 v 的一圈前进
+            if (it->inv && it->inv->next) {
+                it = it->inv->next;
+            } else {
+                break;
+            }
+        } while (it != start && it);
+    }
+
+    // 2) 局部没找到，遍历全局半边列表找一个 from==v 的半边
+    for (Halfedge* h = halfedges.head; h != nullptr; h = h->next_node) {
+        if (h->from == v) {
+            v->halfedge = h;
+            logger->info("  Fixed vertex {} halfedge to {}", v->id, h->id);
+            return true;
+        }
+    }
+
+    // 无法修复
+    logger->error("  Could not find valid halfedge for vertex {}", v->id);
+    return false;
+}
+
 bool operator<(const HalfedgeMesh::EdgeRecord& a, const HalfedgeMesh::EdgeRecord& b)
 {
     if (a.cost == b.cost) {
@@ -175,10 +216,10 @@ optional<Edge*> HalfedgeMesh::flip_edge(Edge* e)
         logger->error("  Could not find valid halfedge for vertex {}", v->id);
     };
 
-    fix_vertex_halfedge(v1);
-    fix_vertex_halfedge(v2);
-    fix_vertex_halfedge(v3);
-    fix_vertex_halfedge(v4);
+    find_and_set_outgoing_halfedge(v1);
+    find_and_set_outgoing_halfedge(v2);
+    find_and_set_outgoing_halfedge(v3);
+    find_and_set_outgoing_halfedge(v4);
 
     global_inconsistent = true;
     return e;
@@ -410,6 +451,20 @@ optional<Vertex*> HalfedgeMesh::split_edge(Edge* e)
         v4->halfedge = h_v4_out;
     }
 
+    v1->is_new = true;
+    v2->is_new = true;
+    v3->is_new = true;
+    v4->is_new = true;
+
+    v_new->halfedge =
+        h1_inv; // 保守设置一个与 v_new 相关的半边（再由 find_and_set_outgoing_halfedge 校验）
+
+    // 现在对 v1, v2, v3, v4, v_new 都做稳健修复（保证 v->halfedge->from == v）
+    find_and_set_outgoing_halfedge(v1);
+    find_and_set_outgoing_halfedge(v2);
+    find_and_set_outgoing_halfedge(v3);
+    find_and_set_outgoing_halfedge(v4);
+    find_and_set_outgoing_halfedge(v_new);
     // ==================== 删除原始的半边和边 ====================
     erase(h);
     erase(h_inv);

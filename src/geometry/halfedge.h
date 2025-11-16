@@ -230,6 +230,7 @@ public:
     /*! \~chinese 将当前半边网格的几何结构同步到数据源 mesh。 */
     void diagnose_mesh();
     bool repair_mesh();
+    bool find_and_set_outgoing_halfedge(Vertex* v);
     void sync();
     /*! \~chinese 渲染所有的半边（不负责渲染顶点、边和面片）。 */
     void render(const Shader& shader);
