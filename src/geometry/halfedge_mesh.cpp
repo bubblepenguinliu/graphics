@@ -246,6 +246,96 @@ HalfedgeMesh::HalfedgeMesh(Object& object) :
     logger->debug("done");
 }
 
+// 在 HalfedgeMesh 类中添加这个函数
+void HalfedgeMesh::diagnose_mesh()
+{
+    logger->info("========== MESH DIAGNOSIS ==========");
+
+    int           boundary_halfedges = 0;
+    int           missing_inv        = 0;
+    vector<Edge*> problematic_edges;
+
+    for (Edge* e = edges.head; e != nullptr; e = e->next_node) {
+        Halfedge* h = e->halfedge;
+        if (!h) {
+            logger->error("Edge {} has null halfedge", e->id);
+            continue;
+        }
+
+        if (!h->inv) {
+            missing_inv++;
+            problematic_edges.push_back(e);
+            logger->warn("Edge {}: halfedge {} has no inverse (BOUNDARY EDGE)", e->id, h->id);
+
+            Vertex* v1 = h->from;
+            Vertex* v2 = h->inv ? h->inv->from : nullptr;
+            (void)v2; // Avoid unused variable warning
+            if (v1) {
+                logger->warn(
+                    "  From vertex {}: ({}, {}, {})", v1->id, v1->pos.x(), v1->pos.y(), v1->pos.z()
+                );
+            }
+        }
+
+        if (h->is_boundary()) {
+            boundary_halfedges++;
+        }
+    }
+
+    logger->info("Total edges: {}", edges.size);
+    logger->info("Boundary halfedges: {}", boundary_halfedges);
+    logger->info("Missing inverse halfedges: {}", missing_inv);
+    logger->info("========== END DIAGNOSIS ==========\n");
+}
+
+// 修复网格：为缺失的反向半边创建它们
+bool HalfedgeMesh::repair_mesh()
+{
+    logger->info("========== MESH REPAIR START ==========");
+
+    vector<pair<Halfedge*, Halfedge*>> missing_pairs;
+
+    // 第一遍：找到所有缺失的反向半边
+    for (Edge* e = edges.head; e != nullptr; e = e->next_node) {
+        Halfedge* h = e->halfedge;
+        if (!h)
+            continue;
+
+        if (!h->inv) {
+            logger->warn("Edge {}: halfedge {} missing inverse", e->id, h->id);
+            missing_pairs.push_back({h, nullptr});
+        }
+    }
+
+    if (missing_pairs.empty()) {
+        logger->info("✓ Mesh is already complete");
+        return true;
+    }
+
+    logger->warn("Found {} halfedges with missing inverses", missing_pairs.size());
+
+    // 第二遍：为每个缺失的反向半边创建配对
+    for (auto& [h, _]: missing_pairs) {
+        Halfedge* h_new = new_halfedge();
+
+        // 设置基本属性
+        h_new->from = h->next->from; // 反向半边的起点是原半边下一个的起点
+        h_new->inv  = h;
+        h->inv      = h_new;
+
+        // 共享同一条边
+        h_new->edge = h->edge;
+
+        logger->info("Created inverse halfedge {} for {}", h_new->id, h->id);
+    }
+
+    logger->info("✓ Mesh repair completed");
+    logger->info("========== MESH REPAIR END ==========\n");
+
+    global_inconsistent = true;
+    return true;
+}
+
 HalfedgeMesh::~HalfedgeMesh()
 {
     clear_erasure_records();
@@ -288,11 +378,7 @@ void HalfedgeMesh::sync()
             } while (h != face->halfedge);
         };
         visit(
-            overloaded{
-                []([[maybe_unused]]
-                   monostate empty) {},
-                sync_vertex, sync_edge, sync_face
-            },
+            overloaded{[]([[maybe_unused]] monostate empty) {}, sync_vertex, sync_edge, sync_face},
             inconsistent_element
         );
         return;

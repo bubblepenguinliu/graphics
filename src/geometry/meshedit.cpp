@@ -40,138 +40,148 @@ bool operator<(const HalfedgeMesh::EdgeRecord& a, const HalfedgeMesh::EdgeRecord
 // ------------------------ flip_edge ------------------------
 optional<Edge*> HalfedgeMesh::flip_edge(Edge* e)
 {
-    // Defensive checks
     if (!e)
         return std::nullopt;
+
     Halfedge* h = e->halfedge;
     if (!h)
         return std::nullopt;
-    Halfedge* h_inv = h->inv;
-    if (!h_inv)
-        return std::nullopt;
 
-    // If either adjacent face is a boundary virtual face, flip is not defined.
-    Face* f1 = h->face;
-    Face* f2 = h_inv->face;
-    if (!f1 || !f2)
-        return std::nullopt; // safety
-    if (f1->is_boundary || f2->is_boundary) {
-        // flip not allowed on boundary
-        logger->trace(
-            "flip_edge: edge {} is on boundary (one adjacent face is virtual) - abort", e->id
-        );
+    Halfedge* h_inv = h->inv;
+    if (!h_inv) {
+        logger->error("flip_edge: edge {} is on boundary, cannot flip", e->id);
         return std::nullopt;
     }
 
-    // Identify the six halfedges as in the handout:
-    // h is the halfedge from v1 -> v2
-    // h_inv is the opposite halfedge from v2 -> v1
-    // Using local names consistent with handout/figures:
-    Halfedge* h_2_3 = h->next;     // halfedge from v2 -> v3
-    Halfedge* h_3_1 = h_2_3->next; // halfedge from v3 -> v1
-    Halfedge* h_1_4 = h_inv->next; // halfedge from v1 -> v4 (in the other face)
-    Halfedge* h_4_2 = h_1_4->next; // halfedge from v4 -> v2
+    Face* f1 = h->face;
+    Face* f2 = h_inv->face;
 
-    // Vertex names:
-    Vertex* v1 = h->from;     // one endpoint of e
-    Vertex* v2 = h_inv->from; // the other endpoint
-    Vertex* v3 = h_3_1->from; // opposite vertex in face f1
-    Vertex* v4 = h_4_2->from; // opposite vertex in face f2
+    if (!f1 || !f2 || f1->is_boundary || f2->is_boundary) {
+        logger->error("flip_edge: edge {} has invalid or boundary faces", e->id);
+        return std::nullopt;
+    }
 
-    logger->trace("---start flipping edge {}---", e->id);
-    logger->trace("(v1, v2) ({}, {})", v1->id, v2->id);
-    logger->trace("(v3, v4) ({}, {})", v3->id, v4->id);
+    // 获取四个顶点
+    Vertex* v1 = h->from;
+    Vertex* v2 = h_inv->from;
+    Vertex* v3 = h->next->from;
+    Vertex* v4 = h_inv->next->from;
 
-    // After flip, diagonal will be between v3 and v4.
-    // We will rewire the two triangles:
-    // before: (v1, v3, v2) and (v2, v4, v1)
-    // after:  (v3, v4, v1) and (v4, v3, v2)  (consistent CCW orientation)
+    if (!v1 || !v2 || !v3 || !v4) {
+        logger->error("flip_edge: cannot get all vertices", e->id);
+        return std::nullopt;
+    }
 
-    // We'll reuse existing halfedges but reassign their neighbors, from and face pointers.
-    // For clarity set up names of the 6 halfedges in final configuration:
-    // face f1 new cycle: (h' = c->d, h_d_a, h_a_c)
-    // Let's match reusing pointers to existing ones:
-    Halfedge* h_c_d = h;     // will become halfedge from v3 -> v4 (reusing h)
-    Halfedge* h_d_c = h_inv; // will become halfedge from v4 -> v3 (reusing h_inv)
+    // 获取相邻的半边
+    Halfedge* h_v1_v3 = h->next;
+    Halfedge* h_v3_v2 = h_v1_v3->next;
+    Halfedge* h_v2_v4 = h_inv->next;
+    Halfedge* h_v4_v1 = h_v2_v4->next;
 
-    // choose other halfedges to reuse for cycles:
-    // For face f1 (the one that contained h originally), we want cycle (v3 -> v4 -> v1):
-    Halfedge* h_d_a =
-        h_4_2; // currently v4 -> v2, we will change 'from' to v4 and set next to v_a_c
-    Halfedge* h_a_c = h_3_1; // currently v3 -> v1 (good for v1->?), we'll update accordingly
+    if (!h_v1_v3 || !h_v3_v2 || !h_v2_v4 || !h_v4_v1) {
+        logger->error("flip_edge: cannot get adjacent halfedges", e->id);
+        return std::nullopt;
+    }
 
-    // For face f2 (the other), we want cycle (v4 -> v3 -> v2):
-    Halfedge* h_c_b =
-        h_2_3; // currently v2 -> v3; will become v3 -> v2 or v3->b depending on reassign
-    Halfedge* h_b_d = h_1_4; // currently v1 -> v4; will become v2-related halfedge
+    // 翻转后的边将连接 v3 和 v4
+    // 原始配置：
+    //     v3
+    //    /  \
+    //   / f1 \
+    //  v1 --- v2
+    //   \ f2 /
+    //    \  /
+    //     v4
+    //
+    // 翻转后：
+    //     v3
+    //    /  \
+    //   / f1 \
+    //  v4 --- v1
+    //   \ f2 /
+    //    \  /
+    //     v2
 
-    // To avoid confusion, we will explicitly set 'from' for reused halfedges:
-    // Set h_c_d (was v1->v2) now v3->v4
-    h_c_d->from = v3;
-    // Set h_d_c (was v2->v1) now v4->v3
-    h_d_c->from = v4;
+    // 重新连接 f1: (v1, v2, v3) -> (v3, v2, v4)
+    h->from = v3;
+    h->next = h_v2_v4;
+    h->prev = h_v4_v1;
 
-    // Set the other 'from' as indicated by final triangles:
-    h_d_a->from = v4; // will point v4 -> v1 (we will rewire next so its end is v1)
-    h_a_c->from = v1; // will be v1 -> v3
-    h_c_b->from = v3; // will be v3 -> v2
-    h_b_d->from = v2; // will be v2 -> v4
+    h_v2_v4->next = h_v4_v1;
+    h_v2_v4->prev = h;
 
-    // Now set next/prev cycles for two faces:
-    // f1 cycle: v3 -> v4 -> v1  (h_c_d -> h_d_a -> h_a_c)
-    h_c_d->next = h_d_a;
-    h_d_a->next = h_a_c;
-    h_a_c->next = h_c_d;
+    h_v4_v1->next = h;
+    h_v4_v1->prev = h_v2_v4;
 
-    h_c_d->prev = h_a_c;
-    h_d_a->prev = h_c_d;
-    h_a_c->prev = h_d_a;
+    h_v1_v3->face = f2;
+    h_v3_v2->face = f1;
 
-    // f2 cycle: v4 -> v3 -> v2  (h_d_c -> h_c_b -> h_b_d)
-    h_d_c->next = h_c_b;
-    h_c_b->next = h_b_d;
-    h_b_d->next = h_d_c;
+    // 重新连接 f2: (v2, v1, v4) -> (v2, v4, v3)
+    h_inv->from = v4;
+    h_inv->next = h_v3_v2;
+    h_inv->prev = h_v1_v3;
 
-    h_d_c->prev = h_b_d;
-    h_c_b->prev = h_d_c;
-    h_b_d->prev = h_c_b;
+    h_v3_v2->next = h_v1_v3;
+    h_v3_v2->prev = h_inv;
 
-    // Update faces on halfedges
-    h_c_d->face = f1;
-    h_d_a->face = f1;
-    h_a_c->face = f1;
+    h_v1_v3->next = h_inv;
+    h_v1_v3->prev = h_v3_v2;
 
-    h_d_c->face = f2;
-    h_c_b->face = f2;
-    h_b_d->face = f2;
+    f1->halfedge = h;
+    f2->halfedge = h_inv;
 
-    // Update representative halfedge pointers on faces
-    f1->halfedge = h_c_d;
-    f2->halfedge = h_d_c;
+    // ==================== 关键：更新顶点的 halfedge 指针 ====================
+    // 对于每个顶点，检查其当前 halfedge 是否仍然有效
+    // 如果无效，找一个新的有效半边
 
-    // update edge pointers if necessary (edge objects owning halfedges)
-    // e is the edge object; after flip it corresponds to halfedges between v3<->v4 so keep e->halfedge = h_c_d;
-    e->halfedge = h_c_d;
+    auto fix_vertex_halfedge = [this](Vertex* v) {
+        if (!v || !v->halfedge)
+            return;
 
-    // For safety, ensure vertices' halfedge pointers still point to an outgoing halfedge
-    // If any vertex's halfedge was one of modified halfedges, keep it; otherwise leave unchanged.
-    v1->halfedge = h_a_c;
-    v2->halfedge = h_b_d;
-    v3->halfedge = h_c_d;
-    v4->halfedge = h_d_c;
+        // 检查当前半边是否从 v 出发
+        if (v->halfedge->from == v) {
+            return; // 有效
+        }
 
-    logger->trace(
-        "face 1 2 3: {}->{}->{}", f1->halfedge->from->id, f1->halfedge->next->from->id,
-        f1->halfedge->next->next->from->id
-    );
-    logger->trace(
-        "face 2 1 4: {}->{}->{}", f2->halfedge->from->id, f2->halfedge->next->from->id,
-        f2->halfedge->next->next->from->id
-    );
-    logger->trace("---end---");
+        // 尝试找一个从 v 出发的半边
+        Halfedge* start = v->halfedge;
+        Halfedge* it    = start;
+
+        do {
+            if (it->inv && it->inv->from == v) {
+                v->halfedge = it->inv;
+                return;
+            }
+
+            // 移动到下一个相邻的半边
+            if (it->inv && it->inv->next) {
+                it = it->inv->next;
+            } else {
+                break;
+            }
+        } while (it != start && it);
+
+        // 如果还是找不到，遍历所有半边
+        logger->warn("Vertex {} halfedge pointer corrupted, searching all halfedges", v->id);
+        for (Halfedge* h_search = halfedges.head; h_search != nullptr;
+             h_search           = h_search->next_node) {
+            if (h_search->from == v) {
+                v->halfedge = h_search;
+                logger->info("  Fixed vertex {} halfedge to {}", v->id, h_search->id);
+                return;
+            }
+        }
+
+        logger->error("  Could not find valid halfedge for vertex {}", v->id);
+    };
+
+    fix_vertex_halfedge(v1);
+    fix_vertex_halfedge(v2);
+    fix_vertex_halfedge(v3);
+    fix_vertex_halfedge(v4);
 
     global_inconsistent = true;
-    return std::optional<Edge*>(e);
+    return e;
 }
 
 // ------------------------ split_edge ------------------------
@@ -179,221 +189,233 @@ optional<Vertex*> HalfedgeMesh::split_edge(Edge* e)
 {
     if (!e)
         return std::nullopt;
+
     Halfedge* h = e->halfedge;
     if (!h)
         return std::nullopt;
-    Halfedge* h_inv = h->inv;
-    if (!h_inv)
-        return std::nullopt;
 
+    Halfedge* h_inv = h->inv;
+
+    // 检查是否为边界边
+    if (!h_inv) {
+        logger->error("split_edge: edge {} is on boundary, cannot split", e->id);
+        return std::nullopt;
+    }
+
+    // 获取两个相邻的面
     Face* f1 = h->face;
     Face* f2 = h_inv->face;
 
-    if (!f1 || !f2 || f1->is_boundary || f2->is_boundary)
+    if (!f1 || !f2) {
+        logger->error("split_edge: edge {} has invalid faces", e->id);
         return std::nullopt;
+    }
 
-    // ------------------------------
-    // Extract original vertices
-    // ------------------------------
+    if (f1->is_boundary || f2->is_boundary) {
+        logger->error("split_edge: edge {} adjacent to boundary face", e->id);
+        return std::nullopt;
+    }
+
+    // 获取四个顶点
     Vertex* v1 = h->from;
     Vertex* v2 = h_inv->from;
 
-    Halfedge* h_2_3 = h->next;
-    Halfedge* h_3_1 = h_2_3->next;
-    Vertex*   v3    = h_3_1->from;
+    if (!v1 || !v2) {
+        logger->error("split_edge: edge {} has invalid vertices", e->id);
+        return std::nullopt;
+    }
 
-    Halfedge* h_1_4 = h_inv->next;
-    Halfedge* h_4_2 = h_1_4->next;
-    Vertex*   v4    = h_4_2->from;
+    // 获取相邻的半边
+    Halfedge* h_next     = h->next;
+    Halfedge* h_prev     = h->prev;
+    Halfedge* h_inv_next = h_inv->next;
+    Halfedge* h_inv_prev = h_inv->prev;
 
-    logger->trace(
-        "split_edge {}: (v1,v2)=({},{}) v3={}, v4={}", e->id, v1->id, v2->id, v3->id, v4->id
-    );
+    if (!h_next || !h_prev || !h_inv_next || !h_inv_prev) {
+        logger->error("split_edge: edge {} has incomplete face loops", e->id);
+        return std::nullopt;
+    }
 
-    // ------------------------------
-    // Create new vertex at midpoint
-    // ------------------------------
+    // v3 是 f1 中的第三个顶点
+    Vertex* v3 = h_prev->from;
+    // v4 是 f2 中的第三个顶点
+    Vertex* v4 = h_inv_prev->from;
+
+    if (!v3 || !v4) {
+        logger->error("split_edge: edge {} cannot find third vertices", e->id);
+        return std::nullopt;
+    }
+
+    // 验证这些半边确实有反向边
+    if (!h_next->inv || !h_prev->inv || !h_inv_next->inv || !h_inv_prev->inv) {
+        logger->error("split_edge: edge {} adjacent halfedges missing inverses", e->id);
+        return std::nullopt;
+    }
+
+    // ==================== 创建新顶点 ====================
     Vertex* v_new = new_vertex();
     v_new->pos    = (v1->pos + v2->pos) * 0.5f;
     v_new->is_new = true;
 
-    // ------------------------------
-    // Create 3 new edges:
-    // e = v1--v_new  (reuse original edge e)
-    // e_nv_v2 = v_new--v2
-    // e_nv_v3 = v_new--v3
-    // e_nv_v4 = v_new--v4
-    // ------------------------------
-    Edge* e_nv_v2 = new_edge();
-    Edge* e_nv_v3 = new_edge();
-    Edge* e_nv_v4 = new_edge();
+    // ==================== 创建新的半边和边 ====================
+    // 边 v1-v_new
+    Edge*     e1     = new_edge();
+    Halfedge* h1     = new_halfedge();
+    Halfedge* h1_inv = new_halfedge();
 
-    // ------------------------------
-    // Create 8 halfedges forming the 4 triangles
-    // triangle 1: v1, v3, v_new
-    Halfedge* a1 = new_halfedge(); // v1 -> v3
-    Halfedge* a2 = new_halfedge(); // v3 -> v_new
-    Halfedge* a3 = new_halfedge(); // v_new -> v1
+    // 边 v_new-v2
+    Edge*     e2     = new_edge();
+    Halfedge* h2     = new_halfedge();
+    Halfedge* h2_inv = new_halfedge();
 
-    // triangle 2: v_new, v3, v2
-    Halfedge* b1 = new_halfedge(); // v_new -> v3
-    Halfedge* b2 = new_halfedge(); // v3 -> v2
-    Halfedge* b3 = new_halfedge(); // v2 -> v_new
+    // 边 v_new-v3
+    Edge*     e3     = new_edge();
+    Halfedge* h3     = new_halfedge();
+    Halfedge* h3_inv = new_halfedge();
 
-    // triangle 3: v1, v_new, v4
-    Halfedge* c1 = new_halfedge(); // v1 -> v_new
-    Halfedge* c2 = new_halfedge(); // v_new -> v4
-    Halfedge* c3 = new_halfedge(); // v4 -> v1
+    // 边 v_new-v4
+    Edge*     e4     = new_edge();
+    Halfedge* h4     = new_halfedge();
+    Halfedge* h4_inv = new_halfedge();
 
-    // triangle 4: v_new, v2, v4
-    Halfedge* d1 = new_halfedge(); // v_new -> v2
-    Halfedge* d2 = new_halfedge(); // v2 -> v4
-    Halfedge* d3 = new_halfedge(); // v4 -> v_new
+    // ==================== 创建新的面 ====================
+    Face* f_new1 = new_face(false); // 分割 f1 产生的新面
+    Face* f_new2 = new_face(false); // 分割 f2 产生的新面
 
-    // ------------------------------
-    // Create 4 faces
-    // ------------------------------
-    Face* fA = new_face(false);
-    Face* fB = new_face(false);
-    Face* fC = new_face(false);
-    Face* fD = new_face(false);
+    // ==================== 设置半边的 from 指针 ====================
+    h1->from     = v1;
+    h1_inv->from = v_new;
+    h2->from     = v_new;
+    h2_inv->from = v2;
+    h3->from     = v_new;
+    h3_inv->from = v3;
+    h4->from     = v_new;
+    h4_inv->from = v4;
 
-    // ------------------------------
-    // Assign "from" for all halfedges
-    // ------------------------------
-    a1->from = v1;
-    a2->from = v3;
-    a3->from = v_new;
-    b1->from = v_new;
-    b2->from = v3;
-    b3->from = v2;
-    c1->from = v1;
-    c2->from = v_new;
-    c3->from = v4;
-    d1->from = v_new;
-    d2->from = v2;
-    d3->from = v4;
+    // ==================== 设置边和反向关系 ====================
+    e1->halfedge = h1;
+    h1->edge     = e1;
+    h1->inv      = h1_inv;
+    h1_inv->edge = e1;
+    h1_inv->inv  = h1;
 
-    // ------------------------------
-    // Assign edges (every edge has 2 halfedges)
-    // ------------------------------
+    e2->halfedge = h2;
+    h2->edge     = e2;
+    h2->inv      = h2_inv;
+    h2_inv->edge = e2;
+    h2_inv->inv  = h2;
 
-    // Edge e: v1 -- v_new
-    e->halfedge = c1; // representative halfedge
-    c1->edge    = e;
-    a3->edge    = e; // v_new -> v1, inv of c1
-    c1->inv     = a3;
-    a3->inv     = c1;
+    e3->halfedge = h3;
+    h3->edge     = e3;
+    h3->inv      = h3_inv;
+    h3_inv->edge = e3;
+    h3_inv->inv  = h3;
 
-    // Edge v_new -- v2
-    e_nv_v2->halfedge = d1;
-    d1->edge          = e_nv_v2;
-    b3->edge          = e_nv_v2;
-    d1->inv           = b3;
-    b3->inv           = d1;
+    e4->halfedge = h4;
+    h4->edge     = e4;
+    h4->inv      = h4_inv;
+    h4_inv->edge = e4;
+    h4_inv->inv  = h4;
 
-    // Edge v_new -- v3
-    e_nv_v3->halfedge = a2;
-    a2->edge          = e_nv_v3;
-    b1->edge          = e_nv_v3;
-    a2->inv           = b1;
-    b1->inv           = a2;
+    // ==================== 重新连接 f1 的三角形 ====================
+    // 原始 f1: (v1, v2, v3)
+    // 分割后:
+    //   - 三角形 A: (v1, v_new, v3)
+    //   - 三角形 B: (v_new, v2, v3)
 
-    // Edge v_new -- v4
-    e_nv_v4->halfedge = c2;
-    c2->edge          = e_nv_v4;
-    d3->edge          = e_nv_v4;
-    c2->inv           = d3;
-    d3->inv           = c2;
+    // 三角形 A: (v1, v_new, v3)
+    h1->next     = h3;
+    h3->next     = h_prev;
+    h_prev->next = h1;
 
-    // Edge v3 -- v1  (reuse original h_3_1 direction: v3->v1)
-    a1->edge   = h_3_1->edge;
-    a1->inv    = h_3_1;
-    h_3_1->inv = a1;
+    h1->prev     = h_prev;
+    h3->prev     = h1;
+    h_prev->prev = h3;
 
-    // Edge v3 -- v2  (reuse h_2_3 / h_3_1 set)
-    b2->edge   = h_2_3->edge;
-    b2->inv    = h_2_3;
-    h_2_3->inv = b2;
+    h1->face     = f1;
+    h3->face     = f1;
+    h_prev->face = f1;
+    f1->halfedge = h1;
 
-    // Edge v4 -- v1  (reuse h_1_4)
-    c3->edge   = h_1_4->edge;
-    c3->inv    = h_1_4;
-    h_1_4->inv = c3;
+    // 三角形 B: (v_new, v2, v3)
+    h2->next     = h_next;
+    h_next->next = h3_inv;
+    h3_inv->next = h2;
 
-    // Edge v4 -- v2  (reuse h_4_2)
-    d2->edge   = h_4_2->edge;
-    d2->inv    = h_4_2;
-    h_4_2->inv = d2;
+    h2->prev     = h3_inv;
+    h_next->prev = h2;
+    h3_inv->prev = h_next;
 
-    // ------------------------------
-    // Build next/prev cycles for 4 faces
-    // ------------------------------
+    h2->face         = f_new1;
+    h_next->face     = f_new1;
+    h3_inv->face     = f_new1;
+    f_new1->halfedge = h2;
 
-    // Face A: v1 -> v3 -> v_new
-    a1->next = a2;
-    a2->next = a3;
-    a3->next = a1;
-    a1->prev = a3;
-    a2->prev = a1;
-    a3->prev = a2;
-    a1->face = a2->face = a3->face = fA;
-    fA->halfedge                   = a1;
+    // ==================== 重新连接 f2 的三角形 ====================
+    // 原始 f2: (v2, v1, v4)
+    // 分割后:
+    //   - 三角形 C: (v2, v_new, v4)
+    //   - 三角形 D: (v_new, v1, v4)
 
-    // Face B: v_new -> v3 -> v2
-    b1->next = b2;
-    b2->next = b3;
-    b3->next = b1;
-    b1->prev = b3;
-    b2->prev = b1;
-    b3->prev = b2;
-    b1->face = b2->face = b3->face = fB;
-    fB->halfedge                   = b1;
+    // 三角形 C: (v2, v_new, v4)
+    h2_inv->next     = h4;
+    h4->next         = h_inv_prev;
+    h_inv_prev->next = h2_inv;
 
-    // Face C: v1 -> v_new -> v4
-    c1->next = c2;
-    c2->next = c3;
-    c3->next = c1;
-    c1->prev = c3;
-    c2->prev = c1;
-    c3->prev = c2;
-    c1->face = c2->face = c3->face = fC;
-    fC->halfedge                   = c1;
+    h2_inv->prev     = h_inv_prev;
+    h4->prev         = h2_inv;
+    h_inv_prev->prev = h4;
 
-    // Face D: v_new -> v2 -> v4
-    d1->next = d2;
-    d2->next = d3;
-    d3->next = d1;
-    d1->prev = d3;
-    d2->prev = d1;
-    d3->prev = d2;
-    d1->face = d2->face = d3->face = fD;
-    fD->halfedge                   = d1;
+    h2_inv->face     = f2;
+    h4->face         = f2;
+    h_inv_prev->face = f2;
+    f2->halfedge     = h2_inv;
 
-    // ------------------------------
-    // Reset vertex halfedge pointers
-    // ------------------------------
-    v1->halfedge    = a1;
-    v2->halfedge    = b3;
-    v3->halfedge    = a2;
-    v4->halfedge    = c3;
-    v_new->halfedge = a3;
+    // 三角形 D: (v_new, v1, v4)
+    h1_inv->next     = h_inv_next;
+    h_inv_next->next = h4_inv;
+    h4_inv->next     = h1_inv;
 
-    // ------------------------------
-    // Finally remove ALL old halfedges + faces
-    // ------------------------------
+    h1_inv->prev     = h4_inv;
+    h_inv_next->prev = h1_inv;
+    h4_inv->prev     = h_inv_next;
+
+    h1_inv->face     = f_new2;
+    h_inv_next->face = f_new2;
+    h4_inv->face     = f_new2;
+    f_new2->halfedge = h1_inv;
+
+    // ==================== 关键：更新所有顶点的 halfedge 指针 ====================
+    v_new->halfedge = h1_inv;
+
+    // 对于 v1：需要找一个从 v1 出发的有效半边
+    // 优先选择新创建的半边
+    v1->halfedge = h1;
+
+    // 对于 v2：需要找一个从 v2 出发的有效半边
+    v2->halfedge = h2_inv;
+
+    // 对于 v3：需要找一个从 v3 出发的有效半边
+    // h_prev 现在在三角形 A 中，从 v3 指向 v1
+    // h3_inv 在三角形 B 中，从 v3 指向 v_new
+    // 我们需要找一个从 v3 出发的半边
+    Halfedge* h_v3_out = h_prev->inv; // 这个半边从 v3 出发
+    if (h_v3_out) {
+        v3->halfedge = h_v3_out;
+    }
+
+    // 对于 v4：需要找一个从 v4 出发的有效半边
+    Halfedge* h_v4_out = h_inv_prev->inv; // 这个半边从 v4 出发
+    if (h_v4_out) {
+        v4->halfedge = h_v4_out;
+    }
+
+    // ==================== 删除原始的半边和边 ====================
     erase(h);
     erase(h_inv);
-    erase(h_2_3);
-    erase(h_3_1);
-    erase(h_1_4);
-    erase(h_4_2);
-    erase(f1);
-    erase(f2);
+    erase(e);
 
     global_inconsistent = true;
-    logger->trace("split_edge {} done, new vertex {}", e->id, v_new->id);
-
     return v_new;
 }
 
@@ -514,53 +536,250 @@ optional<Vertex*> HalfedgeMesh::collapse_edge(Edge* e)
 
 void HalfedgeMesh::loop_subdivide()
 {
-    optional<HalfedgeMeshFailure> check_result = validate();
-    if (check_result.has_value()) {
+    logger->info("========== LOOP SUBDIVIDE START ==========");
+
+    // 诊断网格
+    diagnose_mesh();
+
+    // 尝试修复网格
+    if (!repair_mesh()) {
+        logger->error("❌ Failed to repair mesh");
         return;
     }
+
+    optional<HalfedgeMeshFailure> check_result = validate();
+    if (check_result.has_value()) {
+        logger->error("❌ Validation failed after repair");
+        return;
+    }
+    logger->info("✓ Initial validation passed");
     logger->info(
-        "subdivide object {} (ID: {}) with Loop Subdivision strategy", object.name, object.id
+        fmt::format(
+            " Original: {} vertices, {} edges, {} faces", vertices.size, edges.size, faces.size
+        )
     );
-    logger->info("original mesh: {} vertices, {} faces in total", vertices.size, faces.size);
-    // Each vertex and edge of the original mesh can be associated with a vertex
-    // in the new (subdivided) mesh.
-    // Therefore, our strategy for computing the subdivided vertex locations is to
-    // *first* compute the new positions using the connectivity of the original
-    // (coarse) mesh. Navigating this mesh will be much easier than navigating
-    // the new subdivided (fine) mesh, which has more elements to traverse.
-    // We will then assign vertex positions in the new mesh based on the values
-    // we computed for the original mesh.
 
-    // Compute new positions for all the vertices in the input mesh using
-    // the Loop subdivision rule and store them in Vertex::new_pos.
-    //    At this point, we also want to mark each vertex as being a vertex of the
-    //    original mesh. Use Vertex::is_new for this.
+    // ======================== Step 1 ========================
+    logger->info("Step 1: Computing new positions for original vertices...");
 
-    // Next, compute the subdivided vertex positions associated with edges, and
-    // store them in Edge::new_pos.
+    for (Vertex* v = vertices.head; v != nullptr; v = v->next_node) {
+        v->is_new = false;
 
-    // Next, we're going to split every edge in the mesh, in any order.
-    // We're also going to distinguish subdivided edges that came from splitting
-    // an edge in the original mesh from new edges by setting the boolean Edge::is_new.
-    // Note that in this loop, we only want to iterate over edges of the original mesh.
-    // Otherwise, we'll end up splitting edges that we just split (and the
-    // loop will never end!)
-    // I use a vector to store iterators of original because there are three kinds of
-    // edges: original edges, edges split from original edges and newly added edges.
-    // The newly added edges are marked with Edge::is_new property, so there is not
-    // any other property to mark the edges I just split.
+        bool      is_boundary_vertex = false;
+        Halfedge* it                 = v->halfedge;
+        if (it) {
+            Halfedge* start = it;
+            do {
+                if (it->is_boundary()) {
+                    is_boundary_vertex = true;
+                    break;
+                }
+                it = (it->inv && it->inv->next) ? it->inv->next : nullptr;
+                if (!it)
+                    break;
+            } while (it != start);
+        }
 
-    // Now flip any new edge that connects an old and new vertex.
+        if (is_boundary_vertex) {
+            Vertex* v1 = nullptr;
+            Vertex* v2 = nullptr;
+            it         = v->halfedge;
+            if (it) {
+                Halfedge* start = it;
+                do {
+                    if (it->is_boundary()) {
+                        if (!v1) {
+                            v1 = it->inv ? it->inv->from : nullptr;
+                        } else {
+                            v2 = it->inv ? it->inv->from : nullptr;
+                            break;
+                        }
+                    }
+                    it = (it->inv && it->inv->next) ? it->inv->next : nullptr;
+                    if (!it)
+                        break;
+                } while (it != start);
+            }
 
-    // Finally, copy new vertex positions into the Vertex::pos.
+            if (v1 && v2) {
+                v->new_pos = 0.75f * v->pos + 0.125f * (v1->pos + v2->pos);
+            } else {
+                v->new_pos = v->pos;
+            }
+        } else {
+            size_t   n            = 0;
+            Vector3f neighbor_sum = Vector3f::Zero();
+            it                    = v->halfedge;
+            if (it) {
+                Halfedge* start = it;
+                do {
+                    Vertex* neighbor = it->inv ? it->inv->from : nullptr;
+                    if (neighbor) {
+                        neighbor_sum += neighbor->pos;
+                        ++n;
+                    }
+                    it = (it->inv && it->inv->next) ? it->inv->next : nullptr;
+                    if (!it)
+                        break;
+                } while (it != start);
+            }
 
-    // Once we have successfully subdivided the mesh, set global_inconsistent
-    // to true to trigger synchronization with GL::Mesh.
+            if (n > 0) {
+                float u    = (n == 3) ? (3.0f / 16.0f) : (3.0f / (8.0f * n));
+                v->new_pos = (1.0f - n * u) * v->pos + u * neighbor_sum;
+            } else {
+                v->new_pos = v->pos;
+            }
+        }
+    }
+    logger->info("✓ Step 1 done");
+
+    // ======================== Step 2 ========================
+    logger->info("Step 2: Computing positions for edge midpoints...");
+
+    vector<Edge*> original_edges;
+    for (Edge* e = edges.head; e != nullptr; e = e->next_node) {
+        original_edges.push_back(e);
+    }
+
+    for (Edge* e: original_edges) {
+        if (!e)
+            continue;
+
+        Halfedge* h = e->halfedge;
+        if (!h)
+            continue;
+
+        Vertex* v1 = h->from;
+        Vertex* v2 = h->inv ? h->inv->from : nullptr;
+
+        if (!v1 || !v2)
+            continue;
+
+        if (!h->inv) {
+            e->new_pos = 0.5f * (v1->pos + v2->pos);
+        } else {
+            Halfedge* h_prev = h->prev;
+            Vertex*   v3     = h_prev ? h_prev->from : nullptr;
+
+            Halfedge* h_inv_prev = h->inv->prev;
+            Vertex*   v4         = h_inv_prev ? h_inv_prev->from : nullptr;
+
+            if (v3 && v4) {
+                e->new_pos = 0.375f * (v1->pos + v2->pos) + 0.125f * (v3->pos + v4->pos);
+            } else {
+                e->new_pos = 0.5f * (v1->pos + v2->pos);
+            }
+        }
+    }
+    logger->info("✓ Step 2 done");
+
+    // ======================== Step 3 ========================
+    logger->info("Step 3: Splitting all original edges...");
+
+    vector<Vertex*> new_vertices;
+    int             split_count = 0;
+
+    for (size_t i = 0; i < original_edges.size(); ++i) {
+        Edge* e = original_edges[i];
+        if (!e)
+            continue;
+
+        Vector3f edge_new_pos = e->new_pos;
+        e->is_new             = false;
+
+        optional<Vertex*> v_new_opt = split_edge(e);
+        if (!v_new_opt.has_value()) {
+            logger->warn("Failed to split edge {}", e->id);
+            continue;
+        }
+
+        Vertex* v_new = v_new_opt.value();
+        if (!v_new)
+            continue;
+
+        v_new->is_new = true;
+        v_new->pos    = edge_new_pos;
+        new_vertices.push_back(v_new);
+        split_count++;
+    }
+
+    logger->info("✓ Step 3 done: {} edges split", split_count);
+
+    // ======================== Step 4 ========================
+    logger->info("Step 4: Flipping edges connecting old and new vertices...");
+
+    vector<Edge*> edges_to_flip;
+    for (Edge* e = edges.head; e != nullptr; e = e->next_node) {
+        if (!e->is_new) {
+            edges_to_flip.push_back(e);
+        }
+    }
+
+    int flip_count = 0;
+    for (Edge* e: edges_to_flip) {
+        if (!e)
+            continue;
+
+        Halfedge* h = e->halfedge;
+        if (!h || !h->inv)
+            continue;
+
+        Vertex* v1 = h->from;
+        Vertex* v2 = h->inv->from;
+
+        if (!v1 || !v2)
+            continue;
+
+        if (v1->is_new == v2->is_new)
+            continue;
+
+        if (h->is_boundary() || h->inv->is_boundary())
+            continue;
+
+        Face* f1 = h->face;
+        Face* f2 = h->inv->face;
+        if (!f1 || !f2 || f1->is_boundary || f2->is_boundary)
+            continue;
+
+        auto flipped = flip_edge(e);
+        if (flipped.has_value()) {
+            flip_count++;
+        }
+    }
+
+    logger->info("✓ Step 4 done: {} edges flipped", flip_count);
+
+    // ======================== Step 5 ========================
+    logger->info("Step 5: Applying new positions to original vertices...");
+
+    int update_count = 0;
+    for (Vertex* v = vertices.head; v != nullptr; v = v->next_node) {
+        if (!v->is_new && v->new_pos.allFinite()) {
+            v->pos = v->new_pos;
+            update_count++;
+        }
+    }
+    logger->info("✓ Step 5 done: {} vertices updated", update_count);
+
+    // ======================== Validation ========================
+    logger->info("Final validation...");
     global_inconsistent = true;
-    logger->info("subdivided mesh: {} vertices, {} faces in total", vertices.size, faces.size);
-    logger->info("Loop Subdivision done");
-    logger->info("");
-    validate();
+
+    optional<HalfedgeMeshFailure> final_check = validate();
+    if (final_check.has_value()) {
+        logger->error("❌ Final validation FAILED");
+        return;
+    }
+
+    logger->info("✓ Final validation passed");
+    logger->info(
+        fmt::format(
+            " Final mesh: {} vertices, {} edges, {} faces", vertices.size, edges.size, faces.size
+        )
+    );
+
+    logger->info("========== LOOP SUBDIVIDE SUCCESS ==========\n");
 }
 
 void HalfedgeMesh::simplify()
