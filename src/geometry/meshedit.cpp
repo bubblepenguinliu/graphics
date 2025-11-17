@@ -23,9 +23,51 @@ using std::vector;
 HalfedgeMesh::EdgeRecord::EdgeRecord(unordered_map<Vertex*, Matrix4f>& vertex_quadrics, Edge* e) :
     edge(e)
 {
-    (void)vertex_quadrics;
-    optimal_pos = Vector3f(0.0f, 0.0f, 0.0f);
-    cost        = 0.0f;
+    // 确保半边和反向半边存在
+    if (!e->halfedge || !e->halfedge->inv) {
+        optimal_pos = Vector3f(0.0f, 0.0f, 0.0f);
+        cost        = std::numeric_limits<float>::infinity();
+        return;
+    }
+
+    Vertex* v1 = e->halfedge->from;
+    Vertex* v2 = e->halfedge->inv->from;
+
+    // 1. 计算合并的二次误差矩阵 K = Kv1 + Kv2 [cite: 177]
+    Matrix4f K = vertex_quadrics.at(v1) + vertex_quadrics.at(v2);
+
+    // 2. 将 K 分解为 K' (3x3), b (3x1), c (1x1)
+    // K = [ K' | b ]
+    //     [ b^T| c ]
+    Matrix3f K_prime = K.block<3, 3>(0, 0);
+    Vector3f b       = K.block<3, 1>(0, 3);
+
+    // 3. 寻找最优位置 x_opt：解线性方程组 K' * x_opt = -b
+    bool     solved = false;
+    Vector4f u_opt;
+
+    // 检查 K' 是否可逆，以求得解析最优解
+    // 使用容差检查可逆性
+    if (K_prime.determinant() != 0.0f) {
+        // x_opt = - (K')^-1 * b
+        // Eigen::Inverse 求解，得到最优 3D 坐标
+        Vector3f x_opt = K_prime.inverse() * (-b);
+
+        // 齐次坐标 u_opt = (x_opt, 1)
+        u_opt       = Vector4f(x_opt.x(), x_opt.y(), x_opt.z(), 1.0f);
+        optimal_pos = x_opt;
+        solved      = true;
+    }
+
+    // 4. Fallback：如果 K' 不可逆，则使用边的中点作为近似最优位置
+    if (!solved) {
+        Vector3f midpoint = (v1->pos + v2->pos) * 0.5f;
+        u_opt             = Vector4f(midpoint.x(), midpoint.y(), midpoint.z(), 1.0f);
+        optimal_pos       = midpoint;
+    }
+
+    // 5. 计算代价： cost = u_opt^T * K * u_opt [cite: 176]
+    cost = u_opt.transpose() * K * u_opt;
 }
 
 bool HalfedgeMesh::find_and_set_outgoing_halfedge(Vertex* v)
@@ -910,28 +952,186 @@ void HalfedgeMesh::simplify()
     }
     logger->info("simplify object {} (ID: {})", object.name, object.id);
     logger->info("original mesh: {} vertices, {} faces", vertices.size, faces.size);
+
+    // 存储面片、顶点、边的二次误差矩阵
     unordered_map<Vertex*, Matrix4f> vertex_quadrics;
     unordered_map<Face*, Matrix4f>   face_quadrics;
     unordered_map<Edge*, EdgeRecord> edge_records;
-    set<EdgeRecord>                  edge_queue;
+    // 使用 std::set 作为优先队列，实现动态排序和更新
+    set<EdgeRecord> edge_queue;
 
-    // Compute initial quadrics for each face by simply writing the plane equation
-    // for the face in homogeneous coordinates. These quadrics should be stored
-    // in face_quadrics
+    // ==================== Step 1: 计算面片的二次误差矩阵 (Kf) ====================
+    // K_f = v * v^T, v = (N, -N . p) [cite: 175, 176]
+    for (Face* f = faces.head; f != nullptr; f = f->next_node) {
+        if (f->is_boundary)
+            continue;
 
-    // -> Compute an initial quadric for each vertex as the sum of the quadrics
-    //    associated with the incident faces, storing it in vertex_quadrics
+        Halfedge* h_start = f->halfedge;
+        if (!h_start)
+            continue;
 
-    // -> Build a priority queue of edges according to their quadric error cost,
-    //    i.e., by building an Edge_Record for each edge and sticking it in the
-    //    queue. You may want to use the above PQueue<Edge_Record> for this.
+        // 假设网格是三角形面片。获取三个顶点：v1, v2, v3
+        Vertex* v1 = h_start->from;
+        Vertex* v2 = h_start->next->from;
+        Vertex* v3 = h_start->next->next->from;
 
-    // -> Until we reach the target edge budget, collapse the best edge. Remember
-    //    to remove from the queue any edge that touches the collapsing edge
-    //    BEFORE it gets collapsed, and add back into the queue any edge touching
-    //    the collapsed vertex AFTER it's been collapsed. Also remember to assign
-    //    a quadric to the collapsed vertex, and to pop the collapsed edge off the
-    //    top of the queue.
+        if (!v1 || !v2 || !v3)
+            continue;
+
+        // 计算面片法向量 N
+        Vector3f v21 = v2->pos - v1->pos;
+        Vector3f v31 = v3->pos - v1->pos;
+        Vector3f N   = v21.cross(v31).normalized();
+
+        // 计算齐次平面方程向量 v = (N, d)，其中 d = -N . p
+        float    d = -N.dot(v1->pos);
+        Vector4f v(N.x(), N.y(), N.z(), d);
+
+        // 计算面片二次误差矩阵 Kf = v * v^T
+        Matrix4f Kf      = v * v.transpose();
+        face_quadrics[f] = Kf;
+    }
+    logger->trace("Step 1: Face quadrics computed.");
+
+    // ==================== Step 2: 计算顶点的二次误差矩阵 (Ki) ====================
+    // K_i = Sum(K_f) for incident faces [cite: 177, 180]
+    for (Vertex* v = vertices.head; v != nullptr; v = v->next_node) {
+        Matrix4f  Ki      = Matrix4f::Zero();
+        Halfedge* h_start = v->halfedge;
+        if (!h_start)
+            continue;
+
+        Halfedge* it = h_start;
+        // 遍历 v 周围的一环邻域面片
+        do {
+            if (it->face && !it->face->is_boundary) {
+                Ki += face_quadrics.at(it->face);
+            }
+
+            // 沿着顶点 v 的一圈，移动到下一个从 v 出发的半边
+            if (it->inv && it->inv->next) {
+                it = it->inv->next;
+            } else {
+                break;
+            }
+        } while (it != h_start);
+
+        vertex_quadrics[v] = Ki;
+    }
+    logger->trace("Step 2: Vertex quadrics computed.");
+
+    // ==================== Step 3: 构建边的优先队列  ====================
+    vector<Edge*> all_edges;
+    for (Edge* e = edges.head; e != nullptr; e = e->next_node) {
+        // 确保边有反向半边（非边界边）
+        if (e->halfedge && e->halfedge->inv) {
+            all_edges.push_back(e);
+        }
+    }
+
+    for (Edge* e: all_edges) {
+        // EdgeRecord 构造函数会计算 K=Ki+Kj, optimal_pos, cost
+        EdgeRecord record(vertex_quadrics, e);
+        edge_records[e] = record;
+        edge_queue.insert(record);
+    }
+    logger->trace("Step 3: Edge priority queue built.");
+
+    size_t initial_faces = faces.size;
+    // 目标面数：原始面数的 1/4
+    size_t target_faces = (initial_faces > 4) ? (initial_faces / 4) : 1;
+
+    logger->info(
+        "Start simplification loop: initial faces={}, target faces={}", initial_faces, target_faces
+    );
+
+    // ==================== Step 4: 循环坍缩最优边 ====================
+    while (faces.size > target_faces && !edge_queue.empty()) {
+        // a) 从优先队列中取出代价最小的边
+        EdgeRecord record = *edge_queue.begin();
+        edge_queue.erase(edge_queue.begin());
+
+        Edge* e = record.edge;
+        // 必须确保边有效，且没有在之前的坍缩中被移除
+        if (!e || !e->halfedge || !e->halfedge->inv) {
+            continue;
+        }
+
+        Vertex*  v1    = e->halfedge->from;
+        Vertex*  v2    = e->halfedge->inv->from;
+        Vector3f x_opt = record.optimal_pos;
+
+        // b) 收集 v1 和 v2 所有相邻的边（即坍缩后需要更新代价的边）
+        std::set<Edge*> nbr_edges;
+        auto            collect_nbr_edges = [&](Vertex* v) {
+            Halfedge* it = v->halfedge;
+            if (it) {
+                Halfedge* start = it;
+                do {
+                    if (it->edge)
+                        nbr_edges.insert(it->edge);
+                    // 沿着顶点 v 的一圈，移动到下一个从 v 出发的半边
+                    if (it->inv && it->inv->next) {
+                        it = it->inv->next;
+                    } else {
+                        break;
+                    }
+                } while (it != start);
+            }
+        };
+
+        collect_nbr_edges(v1);
+        collect_nbr_edges(v2);
+
+        // c) 从队列中移除所有受影响的旧 EdgeRecord
+        for (Edge* nbr_e: nbr_edges) {
+            if (edge_records.count(nbr_e)) {
+                edge_queue.erase(edge_records.at(nbr_e)); // 使用 EdgeRecord 对象移除
+                edge_records.erase(nbr_e);
+            }
+        }
+
+        // d) 尝试坍缩边 (v2 坍缩到 v1)
+        optional<Vertex*> v_new_opt = collapse_edge(e);
+        if (!v_new_opt.has_value()) {
+            logger->trace("Collapse failed for edge {}, skipping.", e->id);
+            continue;
+        }
+
+        // 坍缩成功，v_new 就是保留下来的 v1 顶点
+        Vertex* v_new = v_new_opt.value();
+
+        // e) 更新保留下来的顶点 (v_new) 的位置和二次矩阵
+        // K_new = K_old_v1 + K_old_v2 = K_edge
+        Matrix4f K_new = vertex_quadrics.at(v1) + vertex_quadrics.at(v2);
+
+        // 更新顶点的位置为最优位置
+        v_new->pos = x_opt;
+
+        // 更新顶点的二次矩阵
+        vertex_quadrics[v_new] = K_new;
+        vertex_quadrics.erase(v2);
+        // 移除已删除的 v2 的二次矩阵
+
+        // f) 重新计算并插入与 v_new 相邻的所有新边记录
+        std::set<Edge*> post_collapse_nbr_edges;
+        collect_nbr_edges(v_new); // 重新收集 v_new 的邻边
+
+        for (Edge* nbr_e: post_collapse_nbr_edges) {
+            // 重新计算并插入一个新的 EdgeRecord
+            EdgeRecord new_record(vertex_quadrics, nbr_e);
+            edge_records[nbr_e] = new_record;
+            edge_queue.insert(new_record);
+        }
+
+        logger->trace("Collapsed edge {} -> {} faces remaining", e->id, faces.size);
+    }
+
+    // 清理资源
+    edge_records.clear();
+    edge_queue.clear();
+    vertex_quadrics.clear();
+    face_quadrics.clear();
 
     logger->info("simplified mesh: {} vertices, {} faces", vertices.size, faces.size);
     logger->info("simplification done\n");
