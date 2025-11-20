@@ -147,8 +147,8 @@ optional<Edge*> HalfedgeMesh::flip_edge(Edge* e)
     // 获取四个顶点
     Vertex* v1 = h->from;
     Vertex* v2 = h_inv->from;
-    Vertex* v3 = h->next->from;
-    Vertex* v4 = h_inv->next->from;
+    Vertex* v3 = h->prev->from;
+    Vertex* v4 = h_inv->prev->from;
 
     if (!v1 || !v2 || !v3 || !v4) {
         logger->error("flip_edge: cannot get all vertices", e->id);
@@ -156,12 +156,17 @@ optional<Edge*> HalfedgeMesh::flip_edge(Edge* e)
     }
 
     // 获取相邻的半边
-    Halfedge* h_v1_v3 = h->next;
-    Halfedge* h_v3_v2 = h_v1_v3->next;
-    Halfedge* h_v2_v4 = h_inv->next;
-    Halfedge* h_v4_v1 = h_v2_v4->next;
+    // Halfedge* h_v1_v3 = h->next;
+    // Halfedge* h_v3_v2 = h_v1_v3->next;
+    // Halfedge* h_v2_v4 = h_inv->next;
+    // Halfedge* h_v4_v1 = h_v2_v4->next;
 
-    if (!h_v1_v3 || !h_v3_v2 || !h_v2_v4 || !h_v4_v1) {
+    Halfedge* h_v2_v3 = h->next;
+    Halfedge* h_v3_v1 = h_v2_v3->next;
+    Halfedge* h_v1_v4 = h_inv->next;
+    Halfedge* h_v4_v2 = h_v1_v4->next;
+
+    if (!h_v2_v3 || !h_v3_v1 || !h_v1_v4 || !h_v4_v2) {
         logger->error("flip_edge: cannot get adjacent halfedges", e->id);
         return std::nullopt;
     }
@@ -187,28 +192,28 @@ optional<Edge*> HalfedgeMesh::flip_edge(Edge* e)
 
     // 重新连接 f1: (v1, v2, v3) -> (v3, v2, v4)
     h->from = v3;
-    h->next = h_v2_v4;
-    h->prev = h_v4_v1;
+    h->next = h_v4_v2;
+    h->prev = h_v2_v3;
 
-    h_v2_v4->next = h_v4_v1;
-    h_v2_v4->prev = h;
+    h_v4_v2->next = h_v2_v3;
+    h_v4_v2->prev = h;
 
-    h_v4_v1->next = h;
-    h_v4_v1->prev = h_v2_v4;
+    h_v2_v3->next = h;
+    h_v2_v3->prev = h_v4_v2;
 
-    h_v1_v3->face = f2;
-    h_v3_v2->face = f1;
+    h_v4_v2->face = f1;
+    h_v3_v1->face = f2;
 
     // 重新连接 f2: (v2, v1, v4) -> (v2, v4, v3)
     h_inv->from = v4;
-    h_inv->next = h_v3_v2;
-    h_inv->prev = h_v1_v3;
+    h_inv->next = h_v3_v1;
+    h_inv->prev = h_v1_v4;
 
-    h_v3_v2->next = h_v1_v3;
-    h_v3_v2->prev = h_inv;
+    h_v3_v1->next = h_v1_v4;
+    h_v3_v1->prev = h_inv;
 
-    h_v1_v3->next = h_inv;
-    h_v1_v3->prev = h_v3_v2;
+    h_v1_v4->next = h_inv;
+    h_v1_v4->prev = h_v3_v1;
 
     f1->halfedge = h;
     f2->halfedge = h_inv;
@@ -217,53 +222,53 @@ optional<Edge*> HalfedgeMesh::flip_edge(Edge* e)
     // 对于每个顶点，检查其当前 halfedge 是否仍然有效
     // 如果无效，找一个新的有效半边
 
-    auto fix_vertex_halfedge = [this](Vertex* v) {
-        if (!v || !v->halfedge)
-            return;
+    // auto fix_vertex_halfedge = [this](Vertex* v) {
+    //     if (!v || !v->halfedge)
+    //         return;
 
-        // 检查当前半边是否从 v 出发
-        if (v->halfedge->from == v) {
-            return; // 有效
-        }
+    //     // 检查当前半边是否从 v 出发
+    //     if (v->halfedge->from == v) {
+    //         return; // 有效
+    //     }
 
-        // 尝试找一个从 v 出发的半边
-        Halfedge* start = v->halfedge;
-        Halfedge* it    = start;
+    //     // 尝试找一个从 v 出发的半边
+    //     Halfedge* start = v->halfedge;
+    //     Halfedge* it    = start;
 
-        do {
-            if (it->inv && it->inv->from == v) {
-                v->halfedge = it->inv;
-                return;
-            }
+    //     do {
+    //         if (it->inv && it->inv->from == v) {
+    //             v->halfedge = it->inv;
+    //             return;
+    //         }
 
-            // 移动到下一个相邻的半边
-            if (it->inv && it->inv->next) {
-                it = it->inv->next;
-            } else {
-                break;
-            }
-        } while (it != start && it);
+    //         // 移动到下一个相邻的半边
+    //         if (it->inv && it->inv->next) {
+    //             it = it->inv->next;
+    //         } else {
+    //             break;
+    //         }
+    //     } while (it != start && it);
 
-        // 如果还是找不到，遍历所有半边
-        logger->warn("Vertex {} halfedge pointer corrupted, searching all halfedges", v->id);
-        for (Halfedge* h_search = halfedges.head; h_search != nullptr;
-             h_search           = h_search->next_node) {
-            if (h_search->from == v) {
-                v->halfedge = h_search;
-                logger->info("  Fixed vertex {} halfedge to {}", v->id, h_search->id);
-                return;
-            }
-        }
+    //     // 如果还是找不到，遍历所有半边
+    //     logger->warn("Vertex {} halfedge pointer corrupted, searching all halfedges", v->id);
+    //     for (Halfedge* h_search = halfedges.head; h_search != nullptr;
+    //          h_search           = h_search->next_node) {
+    //         if (h_search->from == v) {
+    //             v->halfedge = h_search;
+    //             logger->info("  Fixed vertex {} halfedge to {}", v->id, h_search->id);
+    //             return;
+    //         }
+    //     }
 
-        logger->error("  Could not find valid halfedge for vertex {}", v->id);
-    };
+    //     logger->error("  Could not find valid halfedge for vertex {}", v->id);
+    // };
 
-    find_and_set_outgoing_halfedge(v1);
-    find_and_set_outgoing_halfedge(v2);
-    find_and_set_outgoing_halfedge(v3);
-    find_and_set_outgoing_halfedge(v4);
+    // find_and_set_outgoing_halfedge(v1);
+    // find_and_set_outgoing_halfedge(v2);
+    // find_and_set_outgoing_halfedge(v3);
+    // find_and_set_outgoing_halfedge(v4);
 
-    global_inconsistent = true;
+    // global_inconsistent = true;
     return e;
 }
 

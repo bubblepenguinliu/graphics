@@ -296,13 +296,37 @@ void Scene::render(const Shader& shader, WorkingMode mode)
     }
 }
 
+// void Scene::simulation_update()
+// {
+// 这次模拟的总时长不是上一帧的时长，而是上一帧时长与之前帧剩余时长的总和，
+// 即上次调用 simulation_update 到现在过了多久。
+
+// 以固定的时间步长 (time_step) 循环模拟物体运动，每模拟一步，模拟总时长就减去一个
+// time_step ，当总时长不够一个 time_step 时停止模拟。
+
+// 根据刚才模拟时间步的数量，更新最后一次调用 simulation_update 的时间 (last_update)。
+// }
+
 void Scene::simulation_update()
 {
-    // 这次模拟的总时长不是上一帧的时长，而是上一帧时长与之前帧剩余时长的总和，
-    // 即上次调用 simulation_update 到现在过了多久。
+    // 计算距离上次模拟经过的真实时间
+    auto current_time = steady_clock::now();
+    // 将时间差转换为秒（float类型）
+    float duration_seconds = std::chrono::duration<float>(current_time - last_update).count();
+    last_update            = current_time;
 
-    // 以固定的时间步长 (time_step) 循环模拟物体运动，每模拟一步，模拟总时长就减去一个
-    // time_step ，当总时长不够一个 time_step 时停止模拟。
+    // 累加器：积累未模拟的时间
+    static float accumulator = 0.0f;
+    accumulator += duration_seconds;
 
-    // 根据刚才模拟时间步的数量，更新最后一次调用 simulation_update 的时间 (last_update)。
+    // 只要积累的时间足够一个固定的时间步长，就执行一次物理模拟
+    // time_step 是全局定义的固定步长（如0.01s），请勿修改变量名
+    while (accumulator >= time_step) {
+        for (auto& object: all_objects) {
+            // 更新每个物体的状态（包括积分和碰撞检测）
+            object->update(all_objects);
+        }
+        // 消耗掉一个时间步长
+        accumulator -= time_step;
+    }
 }
