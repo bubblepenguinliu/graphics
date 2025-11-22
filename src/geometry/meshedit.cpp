@@ -219,54 +219,15 @@ optional<Edge*> HalfedgeMesh::flip_edge(Edge* e)
     f2->halfedge = h_inv;
 
     // ==================== 关键：更新顶点的 halfedge 指针 ====================
-    // 对于每个顶点，检查其当前 halfedge 是否仍然有效
-    // 如果无效，找一个新的有效半边
+    v1->halfedge = h_v1_v4;
+    v2->halfedge = h_v2_v3;
+    v3->halfedge = h;
+    v4->halfedge = h_inv;
 
-    // auto fix_vertex_halfedge = [this](Vertex* v) {
-    //     if (!v || !v->halfedge)
-    //         return;
-
-    //     // 检查当前半边是否从 v 出发
-    //     if (v->halfedge->from == v) {
-    //         return; // 有效
-    //     }
-
-    //     // 尝试找一个从 v 出发的半边
-    //     Halfedge* start = v->halfedge;
-    //     Halfedge* it    = start;
-
-    //     do {
-    //         if (it->inv && it->inv->from == v) {
-    //             v->halfedge = it->inv;
-    //             return;
-    //         }
-
-    //         // 移动到下一个相邻的半边
-    //         if (it->inv && it->inv->next) {
-    //             it = it->inv->next;
-    //         } else {
-    //             break;
-    //         }
-    //     } while (it != start && it);
-
-    //     // 如果还是找不到，遍历所有半边
-    //     logger->warn("Vertex {} halfedge pointer corrupted, searching all halfedges", v->id);
-    //     for (Halfedge* h_search = halfedges.head; h_search != nullptr;
-    //          h_search           = h_search->next_node) {
-    //         if (h_search->from == v) {
-    //             v->halfedge = h_search;
-    //             logger->info("  Fixed vertex {} halfedge to {}", v->id, h_search->id);
-    //             return;
-    //         }
-    //     }
-
-    //     logger->error("  Could not find valid halfedge for vertex {}", v->id);
-    // };
-
-    // find_and_set_outgoing_halfedge(v1);
-    // find_and_set_outgoing_halfedge(v2);
-    // find_and_set_outgoing_halfedge(v3);
-    // find_and_set_outgoing_halfedge(v4);
+    find_and_set_outgoing_halfedge(v1);
+    find_and_set_outgoing_halfedge(v2);
+    find_and_set_outgoing_halfedge(v3);
+    find_and_set_outgoing_halfedge(v4);
 
     // global_inconsistent = true;
     return e;
@@ -386,24 +347,28 @@ optional<Vertex*> HalfedgeMesh::split_edge(Edge* e)
     h1->inv      = h1_inv;
     h1_inv->edge = e1;
     h1_inv->inv  = h1;
+    e1->is_new   = false; // replaces original edge segment v1-v2 (should not be flipped later)
 
     e2->halfedge = h2;
     h2->edge     = e2;
     h2->inv      = h2_inv;
     h2_inv->edge = e2;
     h2_inv->inv  = h2;
+    e2->is_new   = false; // replaces original edge segment v1-v2 (should not be flipped later)
 
     e3->halfedge = h3;
     h3->edge     = e3;
     h3->inv      = h3_inv;
     h3_inv->edge = e3;
     h3_inv->inv  = h3;
+    e3->is_new   = true; // new spoke edge; mark for potential flipping in Loop step
 
     e4->halfedge = h4;
     h4->edge     = e4;
     h4->inv      = h4_inv;
     h4_inv->edge = e4;
     h4_inv->inv  = h4;
+    e4->is_new   = true; // new spoke edge; mark for potential flipping in Loop step
 
     // ==================== 重新连接 f1 的三角形 ====================
     // 原始 f1: (v1, v2, v3)
@@ -497,11 +462,6 @@ optional<Vertex*> HalfedgeMesh::split_edge(Edge* e)
     if (h_v4_out) {
         v4->halfedge = h_v4_out;
     }
-
-    v1->is_new = true;
-    v2->is_new = true;
-    v3->is_new = true;
-    v4->is_new = true;
 
     v_new->halfedge =
         h1_inv; // 保守设置一个与 v_new 相关的半边（再由 find_and_set_outgoing_halfedge 校验）
