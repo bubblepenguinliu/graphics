@@ -1240,27 +1240,183 @@ void HalfedgeMesh::isotropic_remesh()
         "remesh the object {} (ID: {}) with strategy Isotropic Remeshing", object.name, object.id
     );
     logger->info("original mesh: {} vertices, {} faces", vertices.size, faces.size);
-    // Compute the mean edge length.
 
-    // Repeat the four main steps for 5 or 6 iterations
-    // -> Split edges much longer than the target length (being careful about
-    //    how the loop is written!)
-    // -> Collapse edges much shorter than the target length.  Here we need to
-    //    be EXTRA careful about advancing the loop, because many edges may have
-    //    been destroyed by a collapse (which ones?)
-    // -> Now flip each edge if it improves vertex degree
-    // -> Finally, apply some tangential smoothing to the vertex positions
-    static const size_t iteration_limit = 5;
-    set<Edge*>          selected_edges;
-    for (size_t i = 0; i != iteration_limit; ++i) {
-        // Split long edges.
-
-        // Collapse short edges.
-
-        // Flip edges.
-
-        // Vertex averaging.
+    // 1. 计算平均边长 L
+    float  total_length = 0.0f;
+    size_t edge_count   = 0;
+    for (Edge* e = edges.head; e != nullptr; e = e->next_node) {
+        total_length += e->length();
+        edge_count++;
     }
+
+    if (edge_count == 0)
+        return;
+    float L = total_length / (float)edge_count;
+    logger->info("Average edge length L: {}", L);
+
+    // 2. 迭代 5 次
+    static const size_t iteration_limit = 5;
+    for (size_t i = 0; i != iteration_limit; ++i) {
+        // 2.1 分裂过长的边 (> 4/3 L)
+        Edge* next_edge;
+        for (Edge* e = edges.head; e != nullptr; e = next_edge) {
+            next_edge = e->next_node;
+            if (e->length() > (4.0f / 3.0f) * L) {
+                split_edge(e);
+            }
+        }
+
+        // 2.2 坍缩过短的边 (< 4/5 L)
+        for (Edge* e = edges.head; e != nullptr; e = next_edge) {
+            next_edge = e->next_node;
+            // 检查边是否有效
+            if (!e->halfedge || !e->halfedge->inv)
+                continue;
+
+            if (e->length() < (4.0f / 5.0f) * L) {
+                // 检查坍缩后是否会产生过长的边
+                Halfedge* h = e->halfedge;
+                // 再次检查 h 是否有效 (虽然上面检查了，但为了保险)
+                if (!h || !h->inv)
+                    continue;
+
+                Vertex*  v1      = h->from;
+                Vertex*  v2      = h->inv->from;
+                Vector3f new_pos = (v1->pos + v2->pos) * 0.5f;
+
+                bool safe = true;
+                // 检查 v1 的邻居
+                Halfedge* it = v1->halfedge;
+                if (it) {
+                    Halfedge* start = it;
+                    do {
+                        if (it->inv) {
+                            Vertex* neighbor = it->inv->from;
+                            if (neighbor != v2) {
+                                if ((neighbor->pos - new_pos).norm() > (4.0f / 3.0f) * L) {
+                                    safe = false;
+                                    break;
+                                }
+                            }
+                        }
+                        if (it->inv)
+                            it = it->inv->next;
+                        else
+                            break;
+                    } while (it != start);
+                }
+
+                if (!safe)
+                    continue;
+
+                // 检查 v2 的邻居
+                it = v2->halfedge;
+                if (it) {
+                    Halfedge* start = it;
+                    do {
+                        if (it->inv) {
+                            Vertex* neighbor = it->inv->from;
+                            if (neighbor != v1) {
+                                if ((neighbor->pos - new_pos).norm() > (4.0f / 3.0f) * L) {
+                                    safe = false;
+                                    break;
+                                }
+                            }
+                        }
+                        if (it->inv)
+                            it = it->inv->next;
+                        else
+                            break;
+                    } while (it != start);
+                }
+
+                if (safe) {
+                    // 关键修复：在坍缩前，检查 next_edge 是否是即将被删除的边
+                    // collapse_edge 会删除 e, 以及 e 所在两个三角形的其他两条边 (如果不是边界)
+                    // 具体来说是 h->next->edge 和 h->inv->next->edge
+
+                    Edge* e1_del = nullptr;
+                    Edge* e2_del = nullptr;
+
+                    if (h && h->face && !h->face->is_boundary) {
+                        if (h->next)
+                            e1_del = h->next->edge;
+                    }
+                    if (h && h->inv && h->inv->face && !h->inv->face->is_boundary) {
+                        if (h->inv->next)
+                            e2_del = h->inv->next->edge;
+                    }
+
+                    // 如果 next_edge 指向了即将被删除的边，提前移动指针
+                    // 循环检查，防止连续多条边被删除的情况
+                    while (next_edge
+                           && (next_edge == e1_del || next_edge == e2_del || next_edge == e)) {
+                        next_edge = next_edge->next_node;
+                    }
+
+                    collapse_edge(e);
+                }
+            }
+        }
+
+        // 2.3 翻转边以优化度数
+        for (Edge* e = edges.head; e != nullptr; e = next_edge) {
+            next_edge = e->next_node;
+
+            Halfedge* h = e->halfedge;
+            if (!h || !h->inv)
+                continue;
+            if (h->is_boundary() || h->inv->is_boundary())
+                continue;
+
+            Vertex* v1 = h->from;
+            Vertex* v2 = h->inv->from;
+            // 确保 next 指针有效
+            if (!h->next || !h->next->next || !h->inv->next || !h->inv->next->next)
+                continue;
+
+            Vertex* v3 = h->next->next->from;
+            Vertex* v4 = h->inv->next->next->from;
+
+            int d1 = (int)v1->degree();
+            int d2 = (int)v2->degree();
+            int d3 = (int)v3->degree();
+            int d4 = (int)v4->degree();
+
+            int current_deviation =
+                std::abs(d1 - 6) + std::abs(d2 - 6) + std::abs(d3 - 6) + std::abs(d4 - 6);
+            int new_deviation = std::abs(d1 - 1 - 6) + std::abs(d2 - 1 - 6) + std::abs(d3 + 1 - 6)
+                              + std::abs(d4 + 1 - 6);
+
+            if (new_deviation < current_deviation) {
+                flip_edge(e);
+            }
+        }
+
+        // 2.4 顶点平滑
+        for (Vertex* v = vertices.head; v != nullptr; v = v->next_node) {
+            if (!v->halfedge)
+                continue;
+
+            Vector3f c     = v->neighborhood_center();
+            Vector3f p     = v->pos;
+            Vector3f v_vec = c - p;
+            Vector3f N     = v->normal();
+
+            // 切向投影
+            Vector3f v_tangent = v_vec - N.dot(v_vec) * N;
+
+            // 移动
+            v->new_pos = p + 0.2f * v_tangent;
+        }
+
+        for (Vertex* v = vertices.head; v != nullptr; v = v->next_node) {
+            if (v->halfedge) {
+                v->pos = v->new_pos;
+            }
+        }
+    }
+
     logger->info("remeshed mesh: {} vertices, {} faces\n", vertices.size, faces.size);
     global_inconsistent = true;
     validate();
