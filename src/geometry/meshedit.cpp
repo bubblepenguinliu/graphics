@@ -496,104 +496,229 @@ optional<Vertex*> HalfedgeMesh::collapse_edge(Edge* e)
     Vertex* v1 = h->from;
     Vertex* v2 = h_inv->from;
 
-    // If either endpoint is null, abort
+    // 1. 检查基本有效性
     if (!v1 || !v2)
         return std::nullopt;
 
-    // If edge is boundary or one adjacent face is boundary, handle separately as allowed by spec.
-    // The handout requires collapse_edge to consider boundary case. We'll allow collapsing boundary edges,
-    // but must avoid breaking manifoldness. We'll enforce the neighborhood intersection check:
-    // N1(v1) ∩ N1(v2) must have size 2 (per handout)
-    // Collect 1-ring neighbors of v1 and v2 (excluding virtual boundary faces as per representation)
+    // 2. 检查拓扑安全性：两个端点的公共邻接顶点数必须为 2
     std::set<Vertex*> nbrs1, nbrs2;
-
-    // traverse 1-ring for v1
     {
         Halfedge* it = v1->halfedge;
         if (it) {
             Halfedge* start = it;
             do {
-                Vertex* nv = it->inv->from;
-                if (nv && nv != v1)
-                    nbrs1.insert(nv);
-                it = it->inv->next;
+                if (it->inv)
+                    nbrs1.insert(it->inv->from);
+                if (it->inv)
+                    it = it->inv->next;
+                else
+                    break;
             } while (it != start);
         }
     }
-    // traverse 1-ring for v2
     {
         Halfedge* it = v2->halfedge;
         if (it) {
             Halfedge* start = it;
             do {
-                Vertex* nv = it->inv->from;
-                if (nv && nv != v2)
-                    nbrs2.insert(nv);
-                it = it->inv->next;
+                if (it->inv)
+                    nbrs2.insert(it->inv->from);
+                if (it->inv)
+                    it = it->inv->next;
+                else
+                    break;
             } while (it != start);
         }
     }
 
-    // compute intersection size
-    size_t inter_count = 0;
-    for (Vertex* vv: nbrs1) {
-        if (nbrs2.count(vv))
-            ++inter_count;
+    size_t common_neighbors = 0;
+    for (Vertex* v: nbrs1) {
+        if (v != v1 && v != v2 && nbrs2.count(v)) {
+            common_neighbors++;
+        }
     }
-    if (inter_count != 2) {
-        logger->trace(
-            "collapse_edge: N1 intersection size = {} != 2, abort collapse for edge {}",
-            inter_count, e->id
-        );
+
+    if (common_neighbors != 2) {
+        logger->trace("collapse_edge: unsafe collapse, common neighbors = {}", common_neighbors);
         return std::nullopt;
     }
 
     logger->trace("---start collapsing edge {} (v1={}, v2={})---", e->id, v1->id, v2->id);
 
-    // We'll collapse v2 into v1 (i.e., v1 remains, v2 removed). Move all halfedges originating from v2 to originate from v1.
-    // 1) Reassign 'from' of all halfedges that had v2 as from to v1
+    // 1. 创建新顶点 v_new
+    Vertex* v_new = new_vertex();
+    v_new->pos    = (v1->pos + v2->pos) * 0.5f;
+
+    // 4. 收集相关元素 (提前收集以便操作)
+    Face* f1 = h->face;
+    Face* f2 = h_inv->face;
+
+    Halfedge* h_next     = h->next;
+    Halfedge* h_prev     = h->prev;
+    Halfedge* h_inv_next = h_inv->next;
+    Halfedge* h_inv_prev = h_inv->prev;
+
+    Halfedge* h_next_inv     = h_next ? h_next->inv : nullptr;
+    Halfedge* h_prev_inv     = h_prev ? h_prev->inv : nullptr;
+    Halfedge* h_inv_next_inv = h_inv_next ? h_inv_next->inv : nullptr;
+    Halfedge* h_inv_prev_inv = h_inv_prev ? h_inv_prev->inv : nullptr;
+
+    Edge* e_f1_del  = h_next ? h_next->edge : nullptr;
+    Edge* e_f2_del  = h_inv_next ? h_inv_next->edge : nullptr;
+    Edge* e_f1_keep = h_prev ? h_prev->edge : nullptr;
+    Edge* e_f2_keep = h_inv_prev ? h_inv_prev->edge : nullptr;
+
+    // ---------------------------------------------------------
+    // 修复 v3, v4 的 halfedge 指针 (预处理)
+    Vertex* v3     = h_prev ? h_prev->from : nullptr;
+    Vertex* v4     = h_inv_prev ? h_inv_prev->from : nullptr;
+    bool    fix_v3 = false;
+    bool    fix_v4 = false;
+
+    if (v3 && v3->halfedge == h_prev) {
+        v3->halfedge = h_next_inv;
+        if (!v3->halfedge)
+            fix_v3 = true;
+    }
+    if (v4 && v4->halfedge == h_inv_prev) {
+        v4->halfedge = h_inv_next_inv;
+        if (!v4->halfedge)
+            fix_v4 = true;
+    }
+    // ---------------------------------------------------------
+
+    // 2. 将 v1 和 v2 的所有相关半边出点重定向到 v_new
+    {
+        Halfedge* it = v1->halfedge;
+        if (it) {
+            Halfedge* start = it;
+            do {
+                it->from = v_new;
+                if (it->inv)
+                    it = it->inv->next;
+                else
+                    break;
+            } while (it != start);
+        }
+    }
     {
         Halfedge* it = v2->halfedge;
         if (it) {
             Halfedge* start = it;
             do {
-                Halfedge* next = it->inv->next; // step to next around v2
-                // reassign from (except those halfedges that are part of faces that will be deleted because they're adjacent to the collapsing edge)
-                // If face adjacent to this halfedge becomes degenerate (has duplicated vertex), we'll erase that face below.
-                it->from = v1;
-                // also update v1->halfedge to some outgoing halfedge (keep last seen)
-                v1->halfedge = it;
-                it           = next;
+                it->from = v_new;
+                if (it->inv)
+                    it = it->inv->next;
+                else
+                    break;
             } while (it != start);
         }
     }
 
-    // 2) Find faces that will become degenerate (triangles containing both v1 and v2) — those adjacent to the collapsing edge will be removed.
-    // Faces adjacent to h and h_inv are likely to be removed if they are triangles (per handout)
-    Face* fA = h->face;
-    Face* fB = h_inv->face;
-    if (fA && !fA->is_boundary)
-        erase(fA);
-    if (fB && !fB->is_boundary)
-        erase(fB);
+    // 3. 修改 inv 指针 (Stitching)
+    if (h_next_inv)
+        h_next_inv->inv = h_prev_inv;
+    if (h_prev_inv)
+        h_prev_inv->inv = h_next_inv;
 
-    // 3) Erase the edge and vertex v2 (and associated halfedges)
-    // First erase the halfedges on edge e
+    if (h_inv_next_inv)
+        h_inv_next_inv->inv = h_inv_prev_inv;
+    if (h_inv_prev_inv)
+        h_inv_prev_inv->inv = h_inv_next_inv;
+
+    // 4. 修改 edge 指针
+    if (h_next_inv && e_f1_keep) {
+        h_next_inv->edge = e_f1_keep;
+    }
+    if (e_f1_keep) {
+        // 确保保留的边指向有效的半边 (优先指向 h_prev_inv，如果为空则指向 h_next_inv)
+        e_f1_keep->halfedge = h_prev_inv ? h_prev_inv : h_next_inv;
+    }
+
+    if (h_inv_next_inv && e_f2_keep) {
+        h_inv_next_inv->edge = e_f2_keep;
+    }
+    if (e_f2_keep) {
+        e_f2_keep->halfedge = h_inv_prev_inv ? h_inv_prev_inv : h_inv_next_inv;
+    }
+
+    // 5. 处理 face1 和 face2
+    if (f1) {
+        if (!f1->is_boundary) {
+            erase(f1);
+        } else {
+            // 边界面：缝合边界循环
+            if (h_prev)
+                h_prev->next = h_next;
+            if (h_next)
+                h_next->prev = h_prev;
+            if (f1->halfedge == h)
+                f1->halfedge = h_next;
+        }
+    }
+    if (f2) {
+        if (!f2->is_boundary) {
+            erase(f2);
+        } else {
+            // 边界面：缝合边界循环
+            if (h_inv_prev)
+                h_inv_prev->next = h_inv_next;
+            if (h_inv_next)
+                h_inv_next->prev = h_inv_prev;
+            if (f2->halfedge == h_inv)
+                f2->halfedge = h_inv_next;
+        }
+    }
+
+    // 6. 删除半边 (仅删除非边界面的内部半边)
+    if (f1 && !f1->is_boundary) {
+        if (h_next)
+            erase(h_next);
+        if (h_prev)
+            erase(h_prev);
+    }
+    if (f2 && !f2->is_boundary) {
+        if (h_inv_next)
+            erase(h_inv_next);
+        if (h_inv_prev)
+            erase(h_inv_prev);
+    }
     erase(h);
     erase(h_inv);
 
-    // Erase edge object
+    // 7. 删除边
     erase(e);
+    if (f1 && !f1->is_boundary && e_f1_del)
+        erase(e_f1_del);
+    if (f2 && !f2->is_boundary && e_f2_del)
+        erase(e_f2_del);
 
-    // Finally erase vertex v2
+    // 8. 删除顶点
+    erase(v1);
     erase(v2);
 
-    // Some surrounding edges may now have halfedges whose inv/next/prev relationships are stale.
-    // Handout suggests validate() call at the end; also set global_inconsistent.
-    global_inconsistent = true;
-    logger->trace("---end collapsing edge {} -> keep vertex {}---", e->id, v1->id);
+    // 9. 验证
+    v_new->halfedge = h_prev_inv ? h_prev_inv : (h_inv_prev_inv ? h_inv_prev_inv : v_new->halfedge);
+    // 如果上面都为空，find_and_set_outgoing_halfedge 会尝试修复
+    find_and_set_outgoing_halfedge(v_new);
 
-    return std::optional<Vertex*>(v1);
+    // 修复 v3, v4 (如果需要)
+    if (fix_v3)
+        find_and_set_outgoing_halfedge(v3);
+    if (fix_v4)
+        find_and_set_outgoing_halfedge(v4);
+
+    global_inconsistent = true;
+    logger->trace("---end collapsing edge {} -> new vertex {}---", e->id, v_new->id);
+
+    // 10. 验证
+    optional<HalfedgeMeshFailure> validation_result = validate();
+    if (validation_result.has_value()) {
+        logger->error("collapse_edge: validation failed after collapse");
+        return std::nullopt;
+    }
+
+    return std::optional<Vertex*>(v_new);
 }
 
 void HalfedgeMesh::loop_subdivide()
@@ -1075,6 +1200,7 @@ void HalfedgeMesh::simplify()
 
         // 更新顶点的二次矩阵
         vertex_quadrics[v_new] = K_new;
+        vertex_quadrics.erase(v1);
         vertex_quadrics.erase(v2);
         // 移除已删除的 v2 的二次矩阵
 
