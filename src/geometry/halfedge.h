@@ -305,7 +305,7 @@ public:
      * 各向同性重网格化只能应用于三角形网格。
      */
     void isotropic_remesh();
-    /*! \~chinese 执行一次 cotangent 权重的拉普拉斯平滑。 */
+    /*! \~chinese 执行一次 cotangent 权重的拉普拉斯平滑，λ写在toolbar中。 */
     void smooth(float lambda = 0.1f);
     /*! \~chinese 所有半边。 */
     LinkedList<Halfedge> halfedges;
