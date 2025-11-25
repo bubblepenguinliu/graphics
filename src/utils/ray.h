@@ -102,4 +102,20 @@ ray_triangle_intersect(const Ray& ray, const GL::Mesh& mesh, size_t index);
 std::optional<Intersection>
 naive_intersect(const Ray& ray, const GL::Mesh& mesh, const Eigen::Matrix4f model);
 
+/*!
+ * \ingroup rendering
+ * \ingroup utils
+ * \~chinese
+ * \brief 用朴素方法判断射线是否与给定的 mesh 相交（使用局部坐标系下的射线）。
+ *
+ * \param local_ray 局部坐标系下的射线
+ * \param mesh 指定的 mesh
+ * \param normal_matrix 法线变换矩阵 (模型矩阵逆的转置)
+ *
+ * \returns 一个 `std::optional` 对象，若相交，则此对象有值 (`has_value() == true`)；不相交则返回
+ * `std::nullopt` 。
+ */
+std::optional<Intersection>
+naive_intersect(const Ray& local_ray, const GL::Mesh& mesh, const Eigen::Matrix3f& normal_matrix);
+
 #endif // DANDELION_UTILS_RAY_H
