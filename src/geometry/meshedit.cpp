@@ -171,25 +171,6 @@ optional<Edge*> HalfedgeMesh::flip_edge(Edge* e)
         return std::nullopt;
     }
 
-    // 翻转后的边将连接 v3 和 v4
-    // 原始配置：
-    //     v3
-    //    /  \
-    //   / f1 \
-    //  v1 --- v2
-    //   \ f2 /
-    //    \  /
-    //     v4
-    //
-    // 翻转后：
-    //     v3
-    //    /  \
-    //   / f1 \
-    //  v4 --- v1
-    //   \ f2 /
-    //    \  /
-    //     v2
-
     // 重新连接 f1: (v1, v2, v3) -> (v3, v2, v4)
     h->from = v3;
     h->next = h_v4_v2;
