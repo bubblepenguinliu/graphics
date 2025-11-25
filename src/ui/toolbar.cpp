@@ -197,9 +197,9 @@ void Toolbar::layout_mode(Scene& scene)
             ImGui::PopItemWidth();
             ImGui::PopID();
             // 将欧拉角转换为四元数
-            float kx = radians(x_angle);
-            float ky = radians(y_angle);
-            float kz = radians(z_angle);
+            float       kx = radians(x_angle);
+            float       ky = radians(y_angle);
+            float       kz = radians(z_angle);
             Quaternionf qx(cos(kx / 2.0f), sin(kx / 2.0f), 0.0f, 0.0f);
             Quaternionf qy(cos(ky / 2.0f), 0.0f, sin(ky / 2.0f), 0.0f);
             Quaternionf qz(cos(kz / 2.0f), 0.0f, 0.0f, sin(kz / 2.0f));
@@ -349,6 +349,11 @@ void Toolbar::model_mode(Scene& scene)
         ImGui::SameLine();
         if (ImGui::Button("Isotropic Remesh")) {
             scene.halfedge_mesh->isotropic_remesh();
+        }
+        if (ImGui::Button("Laplacian Smooth")) {
+            // 固定一个较小的 lambda，点击一次迭代一轮
+            constexpr float lambda = 0.1f;
+            scene.halfedge_mesh->smooth(lambda);
         }
 
         ImGui::EndTabItem();

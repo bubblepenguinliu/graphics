@@ -214,6 +214,131 @@ optional<Edge*> HalfedgeMesh::flip_edge(Edge* e)
     return e;
 }
 
+// ------------------------ smooth (Laplacian smoothing with cotangent weights) ------------------------
+
+void HalfedgeMesh::smooth(float lambda)
+{
+    if (lambda <= 0.0f) {
+        return;
+    }
+
+    // 为每个顶点计算一次新的位置，存到 new_pos，最后统一写回
+    for (Vertex* v = vertices.head; v != nullptr; v = v->next_node) {
+        // 边界顶点：为了避免边界被拉开或收缩过度，这里选择保持位置不变
+        bool on_boundary = false;
+        if (v->halfedge) {
+            const Halfedge* h = v->halfedge;
+            const Halfedge* i = h;
+            do {
+                if (i->is_boundary()) {
+                    on_boundary = true;
+                    break;
+                }
+                i = i->inv->next;
+            } while (i != h);
+        }
+        if (on_boundary) {
+            v->new_pos = v->pos;
+            continue;
+        }
+
+        // 内部顶点：计算 cotangent 权重拉普拉斯
+        if (!v->halfedge) {
+            v->new_pos = v->pos;
+            continue;
+        }
+
+        const Halfedge* h_start = v->halfedge;
+        const Halfedge* h       = h_start;
+        Vector3f        laplacian(0.0f, 0.0f, 0.0f);
+        float           weight_sum = 0.0f;
+
+        do {
+            const Halfedge* h_opp = h->inv;
+            if (!h_opp) {
+                // 理论上不会发生（内部顶点），防御性写法
+                h = h_opp ? h_opp->next : nullptr;
+                break;
+            }
+
+            Vertex* vi = h_opp->from; // 邻接顶点（与 v 相连的另一端）
+            if (!vi) {
+                h = h_opp->next;
+                continue;
+            }
+
+            // 当前边的两侧三角形：h->face 与 h_opp->face
+            float w_ij = 0.0f;
+
+            auto cot_from_triangle = [](const Vector3f& a, const Vector3f& b, const Vector3f& c) {
+                // 计算以 b 为顶点、a-c 为对边的内角余切：cot(theta_b)
+                Vector3f u        = a - b;
+                Vector3f v        = c - b;
+                float    dot_uv   = u.dot(v);
+                Vector3f cross_uv = u.cross(v);
+                float    sin_len  = cross_uv.norm();
+                if (sin_len <= 1e-8f) {
+                    return 0.0f;
+                }
+                return dot_uv / sin_len;
+            };
+
+            // 左侧三角形（h 所在的面）：顶点 v(=h->from), vi(=h_opp->from), v_left
+            if (h->face && !h->face->is_boundary) {
+                const Halfedge* h_next = h->next; // v -> ?
+                const Halfedge* h_prev = h->prev; // v_prev -> v
+                (void)h_prev;                     // 未使用，但保留以表意
+                Vertex* v_left = nullptr;
+                if (h_next && h_next->next) {
+                    // face 是三角形：h: v->?; h_next: ?->?; h_next->next: ?->v
+                    v_left = h_next->next->from;
+                }
+                if (v_left) {
+                    w_ij += cot_from_triangle(v->pos, vi->pos, v_left->pos);
+                }
+            }
+
+            // 右侧三角形（h_opp 所在的面）：顶点 v, vi, v_right
+            if (h_opp->face && !h_opp->face->is_boundary) {
+                const Halfedge* h_opp_next = h_opp->next;
+                const Halfedge* h_opp_prev = h_opp->prev;
+                (void)h_opp_prev; // 未使用，但保留以表意
+                Vertex* v_right = nullptr;
+                if (h_opp_next && h_opp_next->next) {
+                    v_right = h_opp_next->next->from;
+                }
+                if (v_right) {
+                    w_ij += cot_from_triangle(v->pos, vi->pos, v_right->pos);
+                }
+            }
+
+            // 若权重仍为 0（退化情况），回退到 uniform 权重，避免孤立点
+            if (std::abs(w_ij) < 1e-8f) {
+                w_ij = 1.0f;
+            }
+
+            Vector3f diff = vi->pos - v->pos;
+            laplacian += w_ij * diff;
+            weight_sum += w_ij;
+
+            h = h_opp->next;
+        } while (h && h != h_start);
+
+        if (weight_sum > 1e-8f) {
+            laplacian /= weight_sum;
+        }
+
+        v->new_pos = v->pos + lambda * laplacian;
+    }
+
+    // 统一写回位置
+    for (Vertex* v = vertices.head; v != nullptr; v = v->next_node) {
+        v->pos = v->new_pos;
+    }
+
+    global_inconsistent = true;
+}
+
 // ------------------------ split_edge ------------------------
 optional<Vertex*> HalfedgeMesh::split_edge(Edge* e)
 {
