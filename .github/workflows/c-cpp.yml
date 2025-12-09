@@ -1,0 +1,18 @@
+name: TRY_ACT
+
+on:
+  push:
+
+  pull_request:
+    branches: [ "main" ]
+
+jobs:
+  attention:
+    runs-on: windows-latest
+    steps:
+    - name: Checkout repository
+    - uses: actions/checkout@v4
+
+    - name: say_hello
+      run: echo "我看到了！你在上传！"
+
