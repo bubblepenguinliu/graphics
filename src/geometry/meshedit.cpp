@@ -155,12 +155,6 @@ optional<Edge*> HalfedgeMesh::flip_edge(Edge* e)
         return std::nullopt;
     }
 
-    // 获取相邻的半边
-    // Halfedge* h_v1_v3 = h->next;
-    // Halfedge* h_v3_v2 = h_v1_v3->next;
-    // Halfedge* h_v2_v4 = h_inv->next;
-    // Halfedge* h_v4_v1 = h_v2_v4->next;
-
     Halfedge* h_v2_v3 = h->next;
     Halfedge* h_v3_v1 = h_v2_v3->next;
     Halfedge* h_v1_v4 = h_inv->next;
@@ -477,10 +471,6 @@ optional<Vertex*> HalfedgeMesh::split_edge(Edge* e)
     e4->is_new   = true; // new spoke edge; mark for potential flipping in Loop step
 
     // ==================== 重新连接 f1 的三角形 ====================
-    // 原始 f1: (v1, v2, v3)
-    // 分割后:
-    //   - 三角形 A: (v1, v_new, v3)
-    //   - 三角形 B: (v_new, v2, v3)
 
     // 三角形 A: (v1, v_new, v3)
     h1->next     = h3;
@@ -511,10 +501,6 @@ optional<Vertex*> HalfedgeMesh::split_edge(Edge* e)
     f_new1->halfedge = h2;
 
     // ==================== 重新连接 f2 的三角形 ====================
-    // 原始 f2: (v2, v1, v4)
-    // 分割后:
-    //   - 三角形 C: (v2, v_new, v4)
-    //   - 三角形 D: (v_new, v1, v4)
 
     // 三角形 C: (v2, v_new, v4)
     h2_inv->next     = h4;
@@ -546,23 +532,14 @@ optional<Vertex*> HalfedgeMesh::split_edge(Edge* e)
 
     // ==================== 关键：更新所有顶点的 halfedge 指针 ====================
     v_new->halfedge = h1_inv;
-
-    // 对于 v1：需要找一个从 v1 出发的有效半边
-    // 优先选择新创建的半边
-    v1->halfedge = h1;
-
-    // 对于 v2：需要找一个从 v2 出发的有效半边
-    v2->halfedge = h2_inv;
+    v1->halfedge    = h1;
+    v2->halfedge    = h2_inv;
 
     // 对于 v3：需要找一个从 v3 出发的有效半边
-    // h_prev 现在在三角形 A 中，从 v3 指向 v1
-    // h3_inv 在三角形 B 中，从 v3 指向 v_new
-    // 我们需要找一个从 v3 出发的半边
     Halfedge* h_v3_out = h_prev->inv; // 这个半边从 v3 出发
     if (h_v3_out) {
         v3->halfedge = h_v3_out;
     }
-
     // 对于 v4：需要找一个从 v4 出发的有效半边
     Halfedge* h_v4_out = h_inv_prev->inv; // 这个半边从 v4 出发
     if (h_v4_out) {
@@ -842,7 +819,7 @@ void HalfedgeMesh::loop_subdivide()
 
     optional<HalfedgeMeshFailure> check_result = validate();
     if (check_result.has_value()) {
-        logger->error("❌ Validation failed after repair");
+        logger->error(" Validation failed after repair");
         return;
     }
     logger->info("✓ Initial validation passed");
@@ -877,11 +854,6 @@ void HalfedgeMesh::loop_subdivide()
         // Attempt to ensure v->halfedge exists for local ops
         ensure_vertex_halfedge(v);
 
-        // -----------------------
-        // Robust neighbor collection:
-        // do NOT rely only on local next/inv traversal which can fail temporarily;
-        // instead gather neighbors by scanning halfedges and deduplicating.
-        // -----------------------
         bool                 is_boundary_vertex = false;
         std::vector<Vertex*> neighbors;
         neighbors.reserve(16);
@@ -904,7 +876,7 @@ void HalfedgeMesh::loop_subdivide()
             if (h->inv && h->inv->from == v) {
                 Vertex* nb = h->from;
                 if (nb && nb != v) {
-                    if (std::find(neighbors.begin(), neighbors.end(), nb) == neighbors.end()) {
+                    if (std::find(neighbors.begin(), neighbors.en d(), nb) == neighbors.end()) {
                         neighbors.push_back(nb);
                     }
                 }
