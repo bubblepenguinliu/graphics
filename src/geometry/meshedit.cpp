@@ -345,23 +345,12 @@ optional<Vertex*> HalfedgeMesh::split_edge(Edge* e)
 
     Halfedge* h_inv = h->inv;
 
-    // 检查是否为边界边
-    if (!h_inv) {
-        logger->error("split_edge: edge {} is on boundary, cannot split", e->id);
-        return std::nullopt;
-    }
-
     // 获取两个相邻的面
     Face* f1 = h->face;
     Face* f2 = h_inv->face;
 
     if (!f1 || !f2) {
         logger->error("split_edge: edge {} has invalid faces", e->id);
-        return std::nullopt;
-    }
-
-    if (f1->is_boundary || f2->is_boundary) {
-        logger->error("split_edge: edge {} adjacent to boundary face", e->id);
         return std::nullopt;
     }
 
@@ -382,16 +371,6 @@ optional<Vertex*> HalfedgeMesh::split_edge(Edge* e)
 
     if (!h_next || !h_prev || !h_inv_next || !h_inv_prev) {
         logger->error("split_edge: edge {} has incomplete face loops", e->id);
-        return std::nullopt;
-    }
-
-    // v3 是 f1 中的第三个顶点
-    Vertex* v3 = h_prev->from;
-    // v4 是 f2 中的第三个顶点
-    Vertex* v4 = h_inv_prev->from;
-
-    if (!v3 || !v4) {
-        logger->error("split_edge: edge {} cannot find third vertices", e->id);
         return std::nullopt;
     }
 
@@ -417,29 +396,11 @@ optional<Vertex*> HalfedgeMesh::split_edge(Edge* e)
     Halfedge* h2     = new_halfedge();
     Halfedge* h2_inv = new_halfedge();
 
-    // 边 v_new-v3
-    Edge*     e3     = new_edge();
-    Halfedge* h3     = new_halfedge();
-    Halfedge* h3_inv = new_halfedge();
-
-    // 边 v_new-v4
-    Edge*     e4     = new_edge();
-    Halfedge* h4     = new_halfedge();
-    Halfedge* h4_inv = new_halfedge();
-
-    // ==================== 创建新的面 ====================
-    Face* f_new1 = new_face(false); // 分割 f1 产生的新面
-    Face* f_new2 = new_face(false); // 分割 f2 产生的新面
-
     // ==================== 设置半边的 from 指针 ====================
     h1->from     = v1;
     h1_inv->from = v_new;
     h2->from     = v_new;
     h2_inv->from = v2;
-    h3->from     = v_new;
-    h3_inv->from = v3;
-    h4->from     = v_new;
-    h4_inv->from = v4;
 
     // ==================== 设置边和反向关系 ====================
     e1->halfedge = h1;
@@ -456,105 +417,151 @@ optional<Vertex*> HalfedgeMesh::split_edge(Edge* e)
     h2_inv->inv  = h2;
     e2->is_new   = false; // replaces original edge segment v1-v2 (should not be flipped later)
 
-    e3->halfedge = h3;
-    h3->edge     = e3;
-    h3->inv      = h3_inv;
-    h3_inv->edge = e3;
-    h3_inv->inv  = h3;
-    e3->is_new   = true; // new spoke edge; mark for potential flipping in Loop step
+    // ==================== 处理 f1 ====================
+    if (!f1->is_boundary) {
+        Vertex* v3 = h_prev->from;
 
-    e4->halfedge = h4;
-    h4->edge     = e4;
-    h4->inv      = h4_inv;
-    h4_inv->edge = e4;
-    h4_inv->inv  = h4;
-    e4->is_new   = true; // new spoke edge; mark for potential flipping in Loop step
+        // 边 v_new-v3
+        Edge*     e3     = new_edge();
+        Halfedge* h3     = new_halfedge();
+        Halfedge* h3_inv = new_halfedge();
 
-    // ==================== 重新连接 f1 的三角形 ====================
+        h3->from     = v_new;
+        h3_inv->from = v3;
 
-    // 三角形 A: (v1, v_new, v3)
-    h1->next     = h3;
-    h3->next     = h_prev;
-    h_prev->next = h1;
+        e3->halfedge = h3;
+        h3->edge     = e3;
+        h3->inv      = h3_inv;
+        h3_inv->edge = e3;
+        h3_inv->inv  = h3;
+        e3->is_new   = true; // new spoke edge; mark for potential flipping in Loop step
 
-    h1->prev     = h_prev;
-    h3->prev     = h1;
-    h_prev->prev = h3;
+        Face* f_new1 = new_face(false); // 分割 f1 产生的新面
 
-    h1->face     = f1;
-    h3->face     = f1;
-    h_prev->face = f1;
-    f1->halfedge = h1;
+        // 三角形 A: (v1, v_new, v3)
+        h1->next     = h3;
+        h3->next     = h_prev;
+        h_prev->next = h1;
 
-    // 三角形 B: (v_new, v2, v3)
-    h2->next     = h_next;
-    h_next->next = h3_inv;
-    h3_inv->next = h2;
+        h1->prev     = h_prev;
+        h3->prev     = h1;
+        h_prev->prev = h3;
 
-    h2->prev     = h3_inv;
-    h_next->prev = h2;
-    h3_inv->prev = h_next;
+        h1->face     = f1;
+        h3->face     = f1;
+        h_prev->face = f1;
+        f1->halfedge = h1;
 
-    h2->face         = f_new1;
-    h_next->face     = f_new1;
-    h3_inv->face     = f_new1;
-    f_new1->halfedge = h2;
+        // 三角形 B: (v_new, v2, v3)
+        h2->next     = h_next;
+        h_next->next = h3_inv;
+        h3_inv->next = h2;
 
-    // ==================== 重新连接 f2 的三角形 ====================
+        h2->prev     = h3_inv;
+        h_next->prev = h2;
+        h3_inv->prev = h_next;
 
-    // 三角形 C: (v2, v_new, v4)
-    h2_inv->next     = h4;
-    h4->next         = h_inv_prev;
-    h_inv_prev->next = h2_inv;
+        h2->face         = f_new1;
+        h_next->face     = f_new1;
+        h3_inv->face     = f_new1;
+        f_new1->halfedge = h2;
+    } else {
+        // f1 is boundary
+        h1->next = h2;
+        h2->next = h_next;
 
-    h2_inv->prev     = h_inv_prev;
-    h4->prev         = h2_inv;
-    h_inv_prev->prev = h4;
+        h1->prev = h_prev;
+        h2->prev = h1;
 
-    h2_inv->face     = f2;
-    h4->face         = f2;
-    h_inv_prev->face = f2;
-    f2->halfedge     = h2_inv;
+        h_prev->next = h1;
+        h_next->prev = h2;
 
-    // 三角形 D: (v_new, v1, v4)
-    h1_inv->next     = h_inv_next;
-    h_inv_next->next = h4_inv;
-    h4_inv->next     = h1_inv;
+        h1->face     = f1;
+        h2->face     = f1;
+        f1->halfedge = h1;
+    }
 
-    h1_inv->prev     = h4_inv;
-    h_inv_next->prev = h1_inv;
-    h4_inv->prev     = h_inv_next;
+    // ==================== 处理 f2 ====================
+    if (!f2->is_boundary) {
+        Vertex* v4 = h_inv_prev->from;
 
-    h1_inv->face     = f_new2;
-    h_inv_next->face = f_new2;
-    h4_inv->face     = f_new2;
-    f_new2->halfedge = h1_inv;
+        // 边 v_new-v4
+        Edge*     e4     = new_edge();
+        Halfedge* h4     = new_halfedge();
+        Halfedge* h4_inv = new_halfedge();
+
+        h4->from     = v_new;
+        h4_inv->from = v4;
+
+        e4->halfedge = h4;
+        h4->edge     = e4;
+        h4->inv      = h4_inv;
+        h4_inv->edge = e4;
+        h4_inv->inv  = h4;
+        e4->is_new   = true; // new spoke edge; mark for potential flipping in Loop step
+
+        Face* f_new2 = new_face(false); // 分割 f2 产生的新面
+
+        // 三角形 C: (v2, v_new, v4)
+        h2_inv->next     = h4;
+        h4->next         = h_inv_prev;
+        h_inv_prev->next = h2_inv;
+
+        h2_inv->prev     = h_inv_prev;
+        h4->prev         = h2_inv;
+        h_inv_prev->prev = h4;
+
+        h2_inv->face     = f2;
+        h4->face         = f2;
+        h_inv_prev->face = f2;
+        f2->halfedge     = h2_inv;
+
+        // 三角形 D: (v_new, v1, v4)
+        h1_inv->next     = h_inv_next;
+        h_inv_next->next = h4_inv;
+        h4_inv->next     = h1_inv;
+
+        h1_inv->prev     = h4_inv;
+        h_inv_next->prev = h1_inv;
+        h4_inv->prev     = h_inv_next;
+
+        h1_inv->face     = f_new2;
+        h_inv_next->face = f_new2;
+        h4_inv->face     = f_new2;
+        f_new2->halfedge = h1_inv;
+    } else {
+        // f2 is boundary
+        h2_inv->next = h1_inv;
+        h1_inv->next = h_inv_next;
+
+        h2_inv->prev = h_inv_prev;
+        h1_inv->prev = h2_inv;
+
+        h_inv_prev->next = h2_inv;
+        h_inv_next->prev = h1_inv;
+
+        h2_inv->face = f2;
+        h1_inv->face = f2;
+        f2->halfedge = h2_inv;
+    }
 
     // ==================== 关键：更新所有顶点的 halfedge 指针 ====================
     v_new->halfedge = h1_inv;
     v1->halfedge    = h1;
     v2->halfedge    = h2_inv;
 
-    // 对于 v3：需要找一个从 v3 出发的有效半边
-    Halfedge* h_v3_out = h_prev->inv; // 这个半边从 v3 出发
-    if (h_v3_out) {
-        v3->halfedge = h_v3_out;
+    // 对于 v3, v4：需要找一个从 v3/v4 出发的有效半边
+    if (!f1->is_boundary) {
+        find_and_set_outgoing_halfedge(h_prev->from); // v3
     }
-    // 对于 v4：需要找一个从 v4 出发的有效半边
-    Halfedge* h_v4_out = h_inv_prev->inv; // 这个半边从 v4 出发
-    if (h_v4_out) {
-        v4->halfedge = h_v4_out;
+    if (!f2->is_boundary) {
+        find_and_set_outgoing_halfedge(h_inv_prev->from); // v4
     }
 
-    v_new->halfedge =
-        h1_inv; // 保守设置一个与 v_new 相关的半边（再由 find_and_set_outgoing_halfedge 校验）
-
-    // 现在对 v1, v2, v3, v4, v_new 都做稳健修复（保证 v->halfedge->from == v）
     find_and_set_outgoing_halfedge(v1);
     find_and_set_outgoing_halfedge(v2);
-    find_and_set_outgoing_halfedge(v3);
-    find_and_set_outgoing_halfedge(v4);
     find_and_set_outgoing_halfedge(v_new);
+
     // ==================== 删除原始的半边和边 ====================
     erase(h);
     erase(h_inv);
@@ -861,9 +868,11 @@ void HalfedgeMesh::loop_subdivide()
         for (Halfedge* h = halfedges.head; h != nullptr; h = h->next_node) {
             // If this halfedge originates from v, the opposite vertex is h->inv->from (if inv exists)
             if (h->from == v) {
-                if (!h->inv) {
+                if (!h->inv || h->is_boundary() || (h->inv && h->inv->is_boundary())) {
                     is_boundary_vertex = true;
-                } else {
+                }
+
+                if (h->inv) {
                     Vertex* nb = h->inv->from;
                     if (nb && nb != v) {
                         if (std::find(neighbors.begin(), neighbors.end(), nb) == neighbors.end()) {
@@ -876,7 +885,7 @@ void HalfedgeMesh::loop_subdivide()
             if (h->inv && h->inv->from == v) {
                 Vertex* nb = h->from;
                 if (nb && nb != v) {
-                    if (std::find(neighbors.begin(), neighbors.en d(), nb) == neighbors.end()) {
+                    if (std::find(neighbors.begin(), neighbors.end(), nb) == neighbors.end()) {
                         neighbors.push_back(nb);
                     }
                 }
@@ -896,6 +905,9 @@ void HalfedgeMesh::loop_subdivide()
                         }
                     }
                 }
+                // Check if h is a boundary halfedge pointing TO v
+                // If h is boundary, and h->inv starts at v (meaning h ends at v? No, h->inv is opposite)
+                // If h->inv->from == v, then h points to v.
                 if (h->inv && h->inv->from == v && h->is_boundary()) {
                     Vertex* nb = h->from;
                     if (nb && nb != v) {
@@ -909,21 +921,11 @@ void HalfedgeMesh::loop_subdivide()
         }
 
         // -----------------------
-        // Fault-tolerant boundary handling:
-        // If vertex is flagged boundary but has >= 3 neighbors (typical internal valence),
-        // this is likely a mis-detection due to temporary inv/next inconsistency.
-        // In that case, force internal smoothing (log a warning).
-        // Only when boundary_neighbors has >= 2 (and neighbors.size() < 3) do we apply the boundary rule.
+        // Boundary handling:
+        // Apply Loop boundary rule if we have at least 2 boundary neighbors.
         // -----------------------
         if (is_boundary_vertex) {
-            if (neighbors.size() >= 3) {
-                logger->warn(
-                    "Vertex {} incorrectly flagged as boundary but has {} neighbors. Forcing "
-                    "internal smoothing.",
-                    v->id, neighbors.size()
-                );
-                // fallthrough to internal smoothing below
-            } else if (boundary_neighbors.size() >= 2) {
+            if (boundary_neighbors.size() >= 2) {
                 // legitimate boundary with two neighbors -> apply Loop boundary rule
                 Vertex* v1 = boundary_neighbors[0];
                 Vertex* v2 = boundary_neighbors[1];
@@ -931,7 +933,6 @@ void HalfedgeMesh::loop_subdivide()
                     v->new_pos = 0.75f * v->pos + 0.125f * (v1->pos + v2->pos);
                     continue; // done for this vertex
                 }
-                // if something odd, fall through to internal smoothing
             } else {
                 // boundary flagged but insufficient boundary neighbors: fall back to internal smoothing
                 logger->warn(
@@ -985,7 +986,23 @@ void HalfedgeMesh::loop_subdivide()
         if (!v1 || !v2)
             continue;
 
-        if (!h->inv) {
+        // Boundary-aware midpoint rule:
+        // If this edge lies on the mesh boundary (or adjacent face is a virtual boundary),
+        // use the boundary midpoint rule v_new = 1/2 (v1 + v2). Otherwise use interior
+        // Loop midpoint formula v_new = 3/8*(v1+v2) + 1/8*(v3+v4) when both opposite verts exist.
+        bool is_boundary_edge = false;
+        if (e->on_boundary())
+            is_boundary_edge = true;
+        if (h && h->is_boundary())
+            is_boundary_edge = true;
+        if (h->inv && h->inv->is_boundary())
+            is_boundary_edge = true;
+        if (h->face && h->face->is_boundary)
+            is_boundary_edge = true;
+        if (h->inv && h->inv->face && h->inv->face->is_boundary)
+            is_boundary_edge = true;
+
+        if (is_boundary_edge) {
             e->new_pos = 0.5f * (v1->pos + v2->pos);
         } else {
             Halfedge* h_prev = h->prev;
