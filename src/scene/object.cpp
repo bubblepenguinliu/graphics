@@ -116,15 +116,18 @@ Matrix4f Object::model()
 
 void Object::update(vector<Object*>& all_objects)
 {
-    // 1. 更新历史状态（为了支持某些依赖历史状态的积分器或回滚）
-    prev_state = KineticState{center, velocity, force / mass};
-
-    // 2. 使用选定的求解器（step函数）计算下一步的预测状态
-    // step函数指针会在运行时指向Forward Euler, RK4等不同实现
+    // 1. 记录当前状态，供积分器使用
     KineticState current_state_in_sim{center, velocity, force / mass};
-    KineticState next_state = step(prev_state, current_state_in_sim);
 
-    // 3. 暂时将位置移动到预测位置，准备进行碰撞检测
+    // 2. 用“上一状态 + 当前状态”计算下一状态
+    //    step 可能是 Forward Euler / RK4 / Symplectic / Backward Euler 等
+    KineticState prev_state_before_step = prev_state; // 保留上一帧状态给 step 使用
+    KineticState next_state             = step(prev_state_before_step, current_state_in_sim);
+
+    // 3. 状态前移：current -> prev_state, next -> current
+    prev_state = current_state_in_sim;
+
+    // 4. 应用新状态，准备进行碰撞检测
     center   = next_state.position;
     velocity = next_state.velocity; // 先更新速度，如果发生碰撞再修正
 

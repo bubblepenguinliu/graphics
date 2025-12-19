@@ -94,7 +94,13 @@ KineticState symplectic_euler_step(const KineticState& previous, const KineticSt
 KineticState
 backward_euler_step([[maybe_unused]] const KineticState& previous, const KineticState& current)
 {
-    return current;
+    // 隐式欧拉（在本场景加速度与位置/速度无关，等价于先更新速度再更新位置）
+    // v(t+1) = v(t) + a(t+1) * dt，此处 a(t+1) 近似为当前加速度（恒定外力）
+    Vector3f next_vel = current.velocity + current.acceleration * time_step;
+    // x(t+1) = x(t) + v(t+1) * dt
+    Vector3f next_pos = current.position + next_vel * time_step;
+
+    return KineticState(next_pos, next_vel, current.acceleration);
 }
 
 // // Function to perform a single Symplectic Euler step
